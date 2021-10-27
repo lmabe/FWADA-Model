@@ -67,7 +67,7 @@ plot(house, pch = 19, col = "black", main = "sample FWG")
 
 
 ```
-
+test
 
 
 ## Generate FW clusters
