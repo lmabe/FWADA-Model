@@ -1,0 +1,84 @@
+---
+title: "Model_Processes"
+author: "Lauren Mabe"
+date: "10/26/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This plot explains the processes of the model to manipulate clusters. 
+
+Two methods are shown, the "splitting function" and the "grabbing function" which are used in different ways at different times during the run of the model. 
+
+# Setup
+## Load libraries
+```{r}
+# for spatial data
+library(sp)
+library(raster)
+
+# for sample data built into package
+library(spData)
+
+# source the functions file
+
+```
+
+## Load data
+The data loaded here is built-in spatial points that will fill in for the "FW Geography" dataset.  
+They have been given a random "FW_dis" (tons FW disposed annually) value to work with the model's functions.  
+```{r}
+
+set.seed(666) # for random number generation
+
+
+# Data on 25,357 single family homes sold in Lucas County, Ohio, 1993-1998
+# we are pretending they are commercial businesses, not houses
+data(house)
+
+# create a "FW_dis" column using random numbers from 0:5
+# this will simulate the "FW Geography" dataset
+house$FW_dis <- runif(nrow(house), 0, 5)
+
+house$idx <- 1:nrow(house)
+
+# drop the built-in columns
+house <- house[,which(names(house) %in% c("idx","FW_dis"))]
+
+
+str(house)
+plot(house, pch = 19, col = "black", main = "sample FWG")
+
+
+```
+
+## Generate FW clusters
+Clusters of points are generated using the kmeans algorithm, which is an input into the M3 model.   
+These clusters are for example purposes. AD cap is set to 5k to get 13 clusters.
+```{r}
+
+set.seed(666) # repeatable
+
+# get clusters using FW_kmeans function
+## returns a named list containing FW points w/ assigned AD_code (BUS) 
+## and their centroids/the AD with information about the cluster (AD)
+km_house <- FW_kmeans(house, 5000)
+
+str(km_house$AD@data)
+
+# plot the result
+plot(km_house$BUS, col = as.factor(km_house$BUS$AD_code), pch = 20, 
+     main = "Kmeans clustering of sample data")
+points(km_house$AD, pch = 24, col = "white", bg = "black")
+
+```
+
+# Splitting clusters
+If a cluster is over 140% full, it can be split equally with both new clusters above the 70% minimum
+
+These are split perpendicularly to the principal direction through the weighted center.  
+If the split does not create relatively equal sized clusters, it will be moved incrementally until both clusters are equal  
+within 5% of the total FW within the cluster. 

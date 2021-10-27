@@ -1,0 +1,297 @@
+---
+title: "Determining_Adjacency"
+author: "Lauren Mabe"
+date: "10/26/2021"
+output: 
+  html_document:
+    theme: journal
+    toc: true
+    toc_float: true
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+This file shows the steps to determining adjacency for the M3 model.  
+As the model runs, the adjacency matrix for a cluster is generated as needed.  
+In this file, the example AD has AD_code x1.  
+
+At each step of the adjacency calculation, plots are made to visually show the method.  
+The functions within each chunk therefore build on one another as new code is added to show new steps.  
+
+This file can be knit and shown as a pdf/html, however, it may be easier to use interactively within R-Studio.  
+
+
+# Setup
+## Load Packages and Functions
+```{r}
+
+# for spatial data
+library(sp)
+library(raster)
+
+# for sample data built into package
+library(spData)
+
+# source the functions file
+
+```
+
+## Load data
+The data loaded here is built-in spatial points that will fill in for the "FW Geography" dataset.  
+They have been given a random "FW_dis" (tons FW disposed annually) value to work with the model's functions.  
+```{r}
+
+set.seed(666) # for random number generation
+
+
+# Data on 25,357 single family homes sold in Lucas County, Ohio, 1993-1998
+# we are pretending they are commercial businesses, not houses
+data(house)
+
+# create a "FW_dis" column using random numbers from 0:5
+# this will simulate the "FW Geography" dataset
+house$FW_dis <- runif(nrow(house), 0, 5)
+
+house$idx <- 1:nrow(house)
+
+# drop the built-in columns
+house <- house[,which(names(house) %in% c("idx","FW_dis"))]
+
+
+str(house)
+plot(house, pch = 19, col = "black", main = "sample FWG")
+
+
+```
+
+
+
+## Generate FW clusters
+Clusters of points are generated using the kmeans algorithm, which is an input into the M3 model.   
+These clusters are for example purposes. AD cap is set to 5k to get 13 clusters.
+```{r}
+
+set.seed(666) # repeatable
+
+# get clusters using FW_kmeans function
+## returns a named list containing FW points w/ assigned AD_code (BUS) 
+## and their centroids/the AD with information about the cluster (AD)
+km_house <- FW_kmeans(house, 5000)
+
+str(km_house$AD@data)
+
+# plot the result
+plot(km_house$BUS, col = as.factor(km_house$BUS$AD_code), pch = 20, 
+     main = "Kmeans clustering of sample data")
+points(km_house$AD, pch = 24, col = "white", bg = "black")
+
+```
+Note: some colors are repeated, however these are separate clusters
+
+
+# Determining Adjacency
+The rest of this file goes through the steps of determining adjacency for the clusters.  
+Functions written in the chunks build on one another to show the process one step at a time.  
+
+## Closest two points between clusters  
+Cluster adjacency must be determined on the boundary of the clusters instead of centroid based methods.  
+In lieu of drawing the cluster boundary using convex/concave hulls or other computationally complex methods,  
+only the closest pair of FW points from one cluster to another are considered.  
+
+This is done by finding the closest BUS point from the target cluster to the original AD  
+then finding the closest BUS point from the original cluster to the target AD  
+The distance between the two points is reported as the adjacency matrix.  
+```{r}
+
+# plots the closest pair of points from on AD (OG - original) to another (T - target)
+# @param OG_code - Default "x1", the AD for for the OG AD (the one finding adjacency for)
+# @param T_code - the AD_code for the Target AD.
+# @param km_res - a kmeans result. A named list (AD = AD, BUS = BUS)
+# returns plots of the closest points
+plot_closest_points <- function(OG_code = "x1", T_code, km_res) {
+    
+    # pull out the BUS points from km_res
+    OG_BUS <- km_res$BUS[km_res$BUS$AD_code == OG_code,]
+    T_BUS <- km_res$BUS[km_res$BUS$AD_code == T_code,]
+    
+    # pull out the AD points from km_res
+    OG_AD <- km_res$AD[km_res$AD$AD_code == OG_code,]
+    T_AD <- km_res$AD[km_res$AD$AD_code == T_code,]
+    
+    # point distance from OG_BUS to to T_AD
+    OG_BUS$pdist <- pointDistance(OG_BUS, T_AD, latlong = T)
+    
+    # pnt dist from T_BUS to OG_AD
+    T_BUS$pdist <- pointDistance(T_BUS, OG_AD, latlong = T)
+    
+    # pnt distance between the two points closest to opposite AD
+    # this is the distance reported in the adjacency matrix
+    dist2points <- pointDistance(OG_BUS[OG_BUS$pdist == min(OG_BUS$pdist),],
+                                    T_BUS[T_BUS$pdist == min(T_BUS$pdist),])
+    
+    
+    l <- as(rbind(OG_BUS[OG_BUS$pdist == min(OG_BUS$pdist),],
+                  T_BUS[T_BUS$pdist == min(T_BUS$pdist),]), "SpatialLines")
+    # plot the result
+    plot(km_res$BUS, col = "grey",
+         main = paste0("Closest point from x1 to ", T_code, " | dist: ", round(dist2points))) # all points
+    points(OG_BUS, pch = 19, col = "red") 
+    points(T_BUS, pch = 19, col = "blue")  
+    points(OG_AD, pch = 24, col = "white", bg = "black") 
+    points(T_AD, pch = 24, col = "white", bg = "black")  
+    points(OG_BUS[OG_BUS$pdist == min(OG_BUS$pdist),], pch = 15, col = "black")
+    points(T_BUS[T_BUS$pdist == min(T_BUS$pdist),],pch = 15, col = "black")
+    plot(l, add = TRUE, lwd = 2, col = "red")
+}
+
+# lapply over the AD codes to get distance of closest points from x1 to all other ADs
+lapply(km_house$AD$AD_code, plot_closest_points, km_res = km_house, OG_code = "x1")
+
+```
+The length of the red line is what is in the adjacency matrix
+
+
+## Ordered adjacency matrix
+```{r}
+
+# calculates the adjacency matrix row for a given AD_code
+# @param AD_code - AD to get adjacents for
+# @param kmean_res - the ADs and BUSs
+getDistMatRow <- function(AD_code, km_res) {
+    
+    # this is same function as plot_closest_points (above) but without plotting
+    simpleClosePoints <- function(OG_code, T_code, km_res) {
+    
+        # get ADs
+        OG_AD <- km_res$AD[km_res$AD$AD_code == OG_code,]
+        T_AD <- km_res$AD[km_res$AD$AD_code == T_code,]
+        
+        # get BUS
+        OG_BUS <- km_res$BUS[km_res$BUS$AD_code == OG_code,]
+        T_BUS <- km_res$BUS[km_res$BUS$AD_code == T_code,]
+        
+        # point distance from OG_BUS to to T_AD
+        OG_BUS$pdist <- pointDistance(OG_BUS, T_AD, lonlat = FALSE)
+        
+        # pnt dist from T_BUS to OG_AD
+        T_BUS$pdist <- pointDistance(T_BUS, OG_AD, lonlat = FALSE)
+        
+        # closest BUS point to the other AD
+        p1 <- OG_BUS[OG_BUS$pdist == min(OG_BUS$pdist, na.rm = TRUE),]
+        p <- T_BUS[T_BUS$pdist == min(T_BUS$pdist, na.rm = TRUE),]
+
+        # pnt dist from two closest BUS points
+        ret <- pointDistance(p1, p, lonlat = FALSE)
+        
+        # return the distance between the closest two points
+        return(ret)
+    } # close simpleClosePoints()
+    
+    # list of AD codes
+    code_list <- as.character(km_res$AD$AD_code)
+    
+    
+    # loop through list of AD codes,
+    # find dist from closest BUS points to T_code (the code being updated for)
+    # there will be a 0 in this vec. In a dist_mat, this 0 would be the diagonal
+    dist_vec <- sapply(code_list, simpleClosePoints, T_code = AD_code, km_res = km_res)
+    names(dist_vec) <- code_list
+    return(dist_vec)
+    
+} # close getDistMatRow()
+
+        
+# get the sorted dist_mat row for the AD_code we need
+sorted <- sort(getDistMatRow("x1", km_house), FALSE)
+
+# remove the 0 from the dist_vec (its been sorted to the front).
+# This is the diagonal on a distance matrix and is x1 to x1
+sorted <- sorted[2:length(sorted)]
+
+par(mfrow = c(1,2), mar = c(3,4,1,1))
+    
+plot(sorted, pch = 15, col = "black",
+     ylab = "distance between closest points",
+     main = "Ordered adjacency matrix")
+
+plot(km_house$BUS, pch = 20, col = as.factor(km_house$BUS$AD_code), 
+     main = "Map of clusters for reference")
+points(km_house$BUS[km_house$BUS$AD_code == "x1",], pch = 20, col = "red")
+points(km_house$AD, pch = 24, col = "white", bg = "black")
+legend("bottomright", pch = 19, col = "red", legend = c("AD_code x1"))
+
+
+
+```
+The points on the left correspond to the length of the red lines in the plots above.  
+Large "jumps" can be seen in the sorted distances.  
+Since the adjacency matrix uses the closest pair of points, instead of the centroids, this jump is approximately the size of the diameter of the clusters.  
+The ADs under the first jump are considered adjacent
+
+## Only adjacent ADs
+To give FW to adjacent ADs, the "jumps" in the ordered distance matrix need to be measured.  
+This could be done using Jenks Natural Break Algorithm, however this method requires a user-inputted number of breaks to choose (like a one-dimensional k-means clustering).  
+When the size of the clusters are known ahead of time, this is possible. However, our model creates variable sized clusters depending on desired AD capacity, therefore an "automatic" method of detecting this first "jump" is needed.  
+
+This is done by finding the difference between points in the ordered adjacency matrix and taking point where the difference is higher than the others (above 90% of standard deviation)
+```{r}
+
+
+
+# make a df of the distance between each point of the sorted adjacency matrix
+diff_df <- data.frame(diff = diff(sorted),
+                      node = 2:length(sorted))
+
+# find standard dev of these differences
+sd_diff <- sd(diff_df$diff)
+
+# get points above 90% of the standard deviation
+diff_df$above_SD <- FALSE
+diff_df$above_SD[diff_df$diff >= (sd_diff * 0.9)] <- TRUE
+
+# get the index of the first point above standard dev line
+# the points with distances below the cutoff point this will be the adjacents
+# ex: cutoff = 7, then first 6 points (based on dist mat) will be adjacents - this is why we subtract one
+cutoff <- min(diff_df$node[diff_df$above_SD == TRUE], na.rm = TRUE)
+cutoff <- cutoff - 1
+
+# get the AD_codes that will be adjacent
+adj_ADs <- names(sorted[1:cutoff])
+
+
+
+# plot results
+par(mfrow = c(1,3), mar = c(3,4,1,1))
+
+## Left
+plot(sorted, pch = 15, col = "black",
+     ylab = "distance between closest points",
+     main = "Ordered adjacency matrix")
+points(sorted[1:4], pch = 15, col = "blue")
+
+## middle
+plot(diff_df$node, diff_df$diff, pch = 15, col = "black", 
+     main = "difference plot", 
+     ylab = "difference between sorted adj. mat. distances")
+lines(diff_df$node, diff_df$diff)
+abline(h = sd_diff, col = "blue")
+
+## right
+plot(km_house$BUS, pch = 20, col = "grey", 
+     main = "adjacent clusters")
+points(km_house$BUS[km_house$BUS$AD_code == "x1",], pch = 20, col = "red")
+points(km_house$BUS[km_house$BUS$AD_code %in% adj_ADs,], col = "blue")
+points(km_house$AD, pch = 24, col = "white", bg = "black")
+legend("bottomright", pch = 19, col = "red", legend = c("AD_code x1"))
+
+
+
+
+
+```
+The middle plot shows the differences between the distances in the adjacency matrix (shown in left plot).  
+The blue line is 90% of the standard deviation of the distances. The first point over that distance corresponds with the first "jump" in the left (distance) plot. The ADs below this jump are considered adjacent (colored blue).  
