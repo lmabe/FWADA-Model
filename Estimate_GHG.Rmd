@@ -114,35 +114,371 @@ The nearest neighbor algorithm in the TSP package was used to construct the rout
 This is the simplest algorithm, connecting each point to its closest neighbor until all points are connected. 
 It is a quick to solve algorithm, but generally does not generate the shortest route.
 2-3opt refinement can be used to optimize the route, however this also increases solve-time and was not used. 
+
+### Sample TSP
 ```{r}
 
+set.seed(666)
+
 # run TSP on sample of the data
-# plot to show how TSP works
+# construct TSP object from some of the coordinates
+tsp_obj <- as.ETSP(cluster$BUS@coords[sample(nrow(cluster$BUS), 100),])
+
+# solve TSP w/ nearest neighbor and no-2opt refinement
+res <- solve_TSP(tsp_obj, method = "nn", control = c(two_opt = FALSE))
+
+
+# find length of overall tour (in miles)
+tour_length(res, tsp_obj)/5280
+
+# plot the output
+plot(tsp_obj, res, main = paste0("Sample Tour length: ", round(tour_length(res, tsp_obj)/5280, 2), " miles"))
+
+
 
 ```
-
 
 
 ## Separate Large clusters
 Large clusters (over 10,000 points) use too much memory to solve the TSP instance.
 These are split into quadrants and TSP was run separately on each quadrant. 
-Occasionally, some quadrants are still too large, these are then split again into quadrants. 
-All quadrants/subquadrants are connected in a prespecified order (shown below) that forms a clockwise loop to estimate VMT
+Occasionally, some quadrants are still too large, these are then split again into subquadrants. 
+
+### Actual clusters
 ```{r}
+
+
+
+# cardinalSplit() splits the given cluster along the cardinal directions
+# @param cluster2 - the point cluster - sp object
+# @param nsplit2 - the size of the AD that needs to be split
+# returns - a list of sp objects - a point cluster for each quadrant
+cardinalSplit <- function(cluster2, nsplit2) {
+  
+  # find the weighted center of the AD
+  # can't just use the AD coordinates if its a second split
+  AD_coords2 <- matrix(c(weighted.mean(x = cluster2@coords[,1],
+                                         w = cluster2$FW_dis),
+                          weighted.mean(x = cluster2@coords[,2],
+                                         w = cluster2$FW_dis)),
+                       nrow = 2, ncol = 1)
+  
+  # if the cluster if over 10000 BUS points, it needs to be split into 4
+  if (nrow(cluster2) > nsplit2) {
+      poop <- cluster2@bbox
+      
+      # combine the bbox coords with the weighted center
+      poop <- cbind(poop, AD_coords2)
+      
+      rownames(poop) <- c("x", "y")
+      colnames(poop) <- c("min", "max", "med")
+      
+
+
+      # make a polygon for each quadrant
+      # there's probably a way to do this automatically, but since I only need 4, its by hand
+      # the points creating the polygons are the top left (NW) point in that poly, going clockwise
+      # (should have started at center point, oh well)
+      polys_list <- list()
+      
+      polys_list[[1]] <- Polygon(matrix(c(poop["x", "min"], poop["x", "med"],
+                                          poop["x", "med"], poop["x", "min"], 
+                                          poop["y", "max"], poop["y", "max"],
+                                          poop["y", "med"], poop["y", "med"]),
+                                 nrow = 4, ncol = 2))
+      polys_list[[1]] <- Polygons(list(polys_list[[1]]), 1)
+      polys_list[[1]] <- SpatialPolygons(list(polys_list[[1]]))
+      proj4string(polys_list[[1]]) <- house@proj4string
+      
+      polys_list[[2]] <- Polygon(matrix(c(poop["x", "med"], poop["x", "max"],
+                                          poop["x", "max"], poop["x","med"],
+                                          poop["y", "max"], poop["y", "max"],
+                                          poop["y", "med"], poop["y", "med"]),
+                                        nrow = 4, ncol = 2))
+      polys_list[[2]] <- Polygons(list(polys_list[[2]]), 1)
+      polys_list[[2]] <- SpatialPolygons(list(polys_list[[2]]))
+      proj4string(polys_list[[2]]) <- house@proj4string
+      
+      polys_list[[3]] <- Polygon(matrix(c(poop["x", "med"], poop["x", "max"],
+                                          poop["x", "max"], poop["x", "med"],
+                                          poop["y", "med"], poop["y", "med"],
+                                          poop["y", "min"], poop["y", "min"]),
+                                        nrow = 4, ncol = 2))
+      polys_list[[3]] <- Polygons(list(polys_list[[3]]), 1)
+      polys_list[[3]] <- SpatialPolygons(list(polys_list[[3]]))
+      proj4string(polys_list[[3]]) <- house@proj4string
+      
+      polys_list[[4]] <- Polygon(matrix(c(poop["x", "min"], poop["x", "med"],
+                                          poop["x", "med"], poop["x", "min"],
+                                          poop["y", "med"], poop["y", "med"],
+                                          poop["y", "min"], poop["y", "min"]),
+                                        nrow = 4, ncol = 2))
+      polys_list[[4]] <- Polygons(list(polys_list[[4]]), 1)
+      polys_list[[4]] <- SpatialPolygons(list(polys_list[[4]]))
+      proj4string(polys_list[[4]]) <- house@proj4string
+      
+      
+      # Get the points in each quadrant
+      # create a list w/ 4 different groups of points, one for each cluster using over()
+      points_list <- lapply(polys_list, function(x) {cluster2$split <- over(cluster2, x)
+                                                     cluster2[is.na(cluster2$split) == FALSE,]})
+
+      names(points_list) <- c("1", "2", "3", "4")
+  
+  # if none of the points need to be split,
+  # just make a list with the whole cluster
+  # needs to be a list, thats whats expected
+  } else {
+    
+    points_list <- list(cluster)
+    names(points_list) <- c("all")
+    
+  } # close if/else
+  
+     return(points_list)
+      
+} # close cardinalSplit()
+
+# split the cluster as needed
+points_list <- cardinalSplit(cluster$BUS, nsplit2 = 10000)
+
+
+
+```
+
+```{r}
+
+
+# bounding box sp object
+# get bounding box
+  bb <- cluster$BUS@bbox
+  
+  # change rownames to remember which one is which
+  rownames(bb) <- c("EW", "NS")
+ 
+
+
+# bbox has the coordinates of the corners of the bbox
+bb
+
+# make an sp object of bbox for plotting
+bbox_sp <- as.matrix(rbind(c(bb[1,1], bb[2,2]), # NW
+                 c(bb[1,2], bb[2,2]), # NE
+                 c(bb[1,2], bb[2,1]), # SE
+                 c(bb[1,1], bb[2,1]))) # SW
+colnames(bbox_sp) <- c("x_coord", "y_coord")
+
+
+bbox_sp <- Polygon(bbox_sp)
+bbox_sp <- Polygons(list(bbox_sp), 1)
+bbox_sp <- SpatialPolygons(list(bbox_sp))
+bbox_sp@proj4string <- house@proj4string
+
+
+# spatial lines object to plot the quadrants
+lx <- SpatialLines(list(Lines(list(Line(rbind(c(bbox_sp@bbox['x','min'], cluster$AD@coords[,2]), 
+                                             c(bbox_sp@bbox['x','max'], cluster$AD@coords[,2])))), 1)))
+
+
+ly <- SpatialLines(list(Lines(list(Line(rbind(c(cluster$AD@coords[,1], bbox_sp@bbox['y','min']), 
+                                             c(cluster$AD@coords[,1], bbox_sp@bbox['y','max'])))), 1)))
+
+
+{plot(cluster$BUS, pch = 19, col = "grey", main = "cluster quadrants")
+points(points_list[[1]], pch = 19, col = "blue")
+points(points_list[[2]], pch = 19, col = "red")
+points(points_list[[3]], pch = 19, col = "yellow")
+points(points_list[[4]], pch = 19, col = "green")
+plot(bbox_sp, add = TRUE, lwd = 2)
+plot(lx, add = TRUE, lwd = 2)
+plot(ly, add = TRUE, lwd = 2)
+points(cluster$AD, pch = 24, col = "black", bg = "red")}
+
+```
+
+
+### split into subquadrants if needed
+Note: threshold to split is from 10,000 points to 7,000 points for this example
+```{r}
+
+# run through the list, get size of each list
+num_points <- lapply(points_list, function(x) nrow(x))
+
+# if needed, split the ones that need to be split again
+# remove the original from the points_list
+# and add the new split clusters back into the points_list
+if (sum(num_points > 7000) > 0) {
+  points_list2 <- lapply(which(num_points > 7000),
+                         function(x) cardinalSplit(points_list[[x]], nsplit2 = 7000))
+  points_list2 <- unlist(points_list2)
+  
+  # manually change the names of points_list2 if they came from
+  # NW or SW quadrants
+  # this will allow us to order them the way we want and the TSP will make a nice loop
+  names(points_list2)[grep("1.", names(points_list2))] <- c("1.3", "1.4", "1.1", "1.2")
+  names(points_list2)[grep("4.", names(points_list2))] <- c("4.3", "4.4", "4.1", "4.2")
+  
+  points_list <- points_list[-which(num_points > 7000)]
+  points_list <- c(points_list, points_list2)
+} # close if
+
+
+
+```
+
+```{r}
+
+{plot(cluster$BUS, pch = 19, col = "grey", main = "cluster quadrants")
+points(points_list[[1]], pch = 19, col = "blue")
+points(points_list[[2]], pch = 19, col = "red")
+points(points_list[[3]], pch = 19, col = "yellow")
+points(points_list[[4]], pch = 19, col = "green")
+points(points_list[[5]], pch = 19, col = "orange")
+points(points_list[[6]], pch = 19, col = "purple")
+points(points_list[[7]], pch = 19, col = "hot pink")
+plot(bbox_sp, add = TRUE, lwd = 2)
+plot(lx, add = TRUE, lwd = 2)
+plot(ly, add = TRUE, lwd = 2)
+points(cluster$AD, pch = 24, col = "black", bg = "red")}
+
+```
+NE quadrant split into subquadrants.
+(need to draw those lines)
+
+## Estimate VMT
+
+### Quadrant order
+If the cluster is split, TSP is run separately on each (sub)quadrant. 
+All quadrants/subquadrants are connected in a prespecified order (shown below) that forms a clockwise loop to estimate VMT.
+```{r}
+
+lab <- data.frame(x = c(40,10,10,40,60,90,90,60,60,90,90,60,40,10,10,40),
+                  y = c(60,60,90,90,90,90,60,60,40,40,10,10,10,10,40,40),
+                  label = 1:16)
+
 
 # show the quadrants/subquadrant diagram
+plot(1:100, 1:100, 
+     pch = 19, col = "white",
+     main = "Quadrant order", 
+     xlab = NA, ylab = NA, 
+     axes = TRUE) # blank graph
+points(lab[,1], lab[,2], 
+       pch = 19, col = "white")
+text(lab[,1], lab[,2], lab[,3], cex=1, col="black")
+abline(v = 50, lwd = 2)
+abline(h = 50, lwd = 2)
+abline(h = 75, lwd = 1)
+abline(v = 75, lwd = 1)
+abline(h = 25, lwd = 1)
+abline(v = 25, lwd = 1)
+
 
 ```
 
+### Run TSP function
+The run_TSP() function uses the TSP package to estimate a tour.  
+Sometimes, splitting a cluster into quadrants results in an empty quadrant, so run_TSP() checks for that.   
+This is because the clsuter is split along cardinal directions (N,S,E,W). 
+Splitting the cluster along its principal direction might prevent this problem.  
 ```{r}
 
-# show the actual cluster being split
+# run_TSP() runs the TSP problem over the given point cluster
+# @param clust - the point cluster - sp object
+# @param close_pnt - the point used to find the start point - coords
+# returns - the tour length in miles
+run_TSP <- function(clust, close_pnt) {
+  print(paste0("clust size ", nrow(clust@coords)))
+  # sometimes splitting the cluster returns an empty quadrant
+  # if that happens, return a 0 for the length
+  if (length(clust@coords) > 0) {
+    
+    # get the starting point for the TSP, it is closest to the
+    d <- pointDistance(close_pnt, clust@coords, lonlat = FALSE)
+    start_idx <- which(d == min(d))
+    
+    # get ETSP object with cluster, solve it, find tour length
+    tsp_obj <- as.ETSP(clust@coords)
+    tour <- solve_TSP(tsp_obj, method = "nn", control = c(start = start_idx))
+    
+    # length of tour + distance to travel between quadrants
+    tour_dist <- tour_length(tour, tsp_obj)/5280
+    tour_dist <- tour_dist + (min(d)/5280)
+    
+    # return the ending points idx
+    tour <- as.integer(tour)   
+    end_idx <- tour[length(tour)]
+    
+    
+    #res <- list(start_idx = start_idx, end_idx = end_idx, tour_dist = tour_dist)
+    res <- list(end_idx = end_idx, tour_dist = tour_dist)
+  } else {
+
+    #res <- list(start_idx = 1, end_idx = NA, tour_dist = 0)
+    res <- list(end_idx = NA, tour_dist = 0)
+  } # close if else
+  return(res)
+} # close run_TSP()
+
 
 ```
 
+The run_TSP() function is ran over the points_list in a loop.  
+The individual routes are connected to form a loop based on the distance from the end point of one route to the start point of the next
 ```{r}
 
-# estimate final VMT
+ # order the list by their name to get circle to go the right way
+    points_list <- points_list[order(names(points_list))]
+    
+    # the first time its ran, start at the point closest to the cluster AD
+    close2 <- cluster$AD@coords
+    
+    #start_idx_list <- list()
+    end_idx_list <- list()
+    #start_sp <- list()
+    end_sp <- list()
+    route_dist <- list()
+    # run the TSP over the whole thing
+    for (i in 1:length(points_list)) {
+
+      poop <- run_TSP(clust = points_list[[i]], close_pnt = close2)
+    
+      route_dist[[i]] <- poop$tour_dist
+
+      
+      # if the quadrant is empty, duplicate the end SP of the previous quadrant
+      # if the NW quadrant is empty (first evaluated), end sp is the AD
+      # this is a lot of ifs....maybe should have split on PD to prevent empty quadrants??
+      if (is.na(poop$end_idx) == TRUE) {
+          if (i == 1) {
+            end_sp[[i]] <- SpatialPoints(AD_coords, cluster@proj4string)
+          } else {
+             end_sp[[i]] <- end_sp[[i-1]]
+          }
+      } else {
+        end_sp[[i]] <- points_list[[i]][poop$end_idx,]
+      } # close ifelse
+    
+      # if the cluster is empty, the end_idx wil return as NA
+      # in that case, dont change the close2 point
+      if (is.na(poop$end_idx) == TRUE) {
+        close2 <- close2
+      } else {
+      # reset the close2 variable as the end point
+      close2 <- points_list[[i]][poop$end_idx,]
+      } # close ifelse
+    
+    print(paste0("Tour dist. quadrant ", i, ": ", round(poop$tour_dist, 2), " miles"))
+    } # close for loop
+    
+    # add tour lengths together
+    route_dist <- do.call(sum, route_dist)
+    
+    # also add the distance from the last stop back to the AD
+    d <- pointDistance(cluster$AD@coords, end_sp[[length(end_sp)]]@coords, lonlat = FALSE)
+    route_dist <- route_dist + (d/5280)
+    
+print(paste0("Total Collection Route: ", round(route_dist, 2), " miles"))
 
 ```
 
