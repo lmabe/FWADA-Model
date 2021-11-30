@@ -219,7 +219,7 @@ plot(sorted, pch = 15, col = "black",
      main = "Ordered adjacency matrix")
 
 plot(km_house$BUS, pch = 20, col = as.factor(km_house$BUS$AD_code), 
-     main = "Map of clusters for reference")
+     main = "Map of clusters")
 points(km_house$BUS[km_house$BUS$AD_code == "x1",], pch = 20, col = "red")
 points(km_house$AD, pch = 24, col = "white", bg = "black")
 legend("bottomright", pch = 19, col = "red", legend = c("AD_code x1"))
