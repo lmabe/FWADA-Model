@@ -53,3 +53,9 @@ FW_kmeans <- function(Bus_pnts, AD_cap) {
     
     return(poop)
 } #close FW_kmeans
+
+
+
+
+
+
