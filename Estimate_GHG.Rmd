@@ -1,0 +1,162 @@
+---
+title: "Calculate_GHG"
+author: "Lauren Mabe"
+date: "11/30/2021"
+output: 
+  html_document:
+    theme: journal
+    toc: true
+    toc_float: true
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This file shows how GHG emissions are calculated for a model's solution
+
+Vehicle Miles Travelled (VMT) is calculated using the Travelling Salesman's Problem routing algorithm  
+
+Two scenarios are used to estimate GHG emissions of the systems:  
+- Scenario 1 (Less Efficient AD) uses a discount factor to reduce efficiency of biogas production if AD is overfilled
+- Scenario 2 (Larger AD) estimates GHG emissions of a system where all ADs are at maximum efficiency
+
+Data sources for GHG emissions are shown
+
+# Setup
+## Load libraries
+```{r}
+# for spatial data
+library(sp)
+library(raster)
+
+# for sample data built into package
+library(spData)
+
+# for visualizing principal direction
+library(ggfortify)
+
+library(TSP) # for estimating collection route
+
+# source the functions file
+
+```
+
+## Load data
+The data loaded here is built-in spatial points that substitutes for one cluster in the M3 model's solution.  
+They have been given a random "FW_dis" (tons FW disposed annually) value to fill in for the "FW Geography" dataset.  
+```{r}
+
+set.seed(666) # for random number generation
+
+
+# Data on 25,357 single family homes sold in Lucas County, Ohio, 1993-1998
+# we are pretending they are commercial businesses, not houses
+data(house)
+
+# create a "FW_dis" column using random numbers from 0:5
+# this will simulate the "FW Geography" dataset
+house$FW_dis <- runif(nrow(house), 0, 5)
+
+house$idx <- 1:nrow(house)
+
+# drop the built-in columns
+house <- house[,which(names(house) %in% c("idx","FW_dis"))]
+
+
+
+# calculate weighted center for the AD
+weightedCenter <- function(cluster1) {
+        # get weighted center
+        wcx <- weighted.mean(x = cluster1@coords[,1], 
+                         w = cluster1$FW_dis)
+        
+        wcy <- weighted.mean(x = cluster1@coords[,2], 
+                         w = cluster1$FW_dis)
+        return(c(wcx, wcy))
+  } # close weighted center
+wc <- weightedCenter(house)
+
+# create sp object
+# create dataframe for the AD
+coord_df <- data.frame(AD_code = "x1",
+                       FW_dis = sum(house$FW_dis))
+# create sp object
+wc <- SpatialPointsDataFrame(coords = t(as.matrix(wc)), data = coord_df, proj4string = house@proj4string)
+
+# create a FW_kmeans object (named list)
+cluster <- list(AD = wc, BUS = house)
+
+
+
+str(cluster$BUS)
+plot(cluster$BUS, pch = 19, col = "black", main = paste0("sample cluster | num points: ", nrow(house)))
+points(cluster$AD, pch = 24, col = "black", bg = "red")
+
+
+```
+
+
+# Estimate VMT
+Vehicle Miles Travelled (VMT) is calcuated separately for each cluster.
+One route is calculated which assumes the collection truck starts at the AD in the centroid,
+travels to each FW point in series,
+then returns to the AD.
+Capacity limitations to the truck are ignored.  
+
+This method is used to estimate VMT for a weekly collection route. 
+When calculating GHG emissions, all (weekly) FW in the cluster is assumed to travel along the entire route. 
+Updates to the model would include the variable (increasing) amount of FW being transported along the route as the truck picks up more from each successive point.  
+
+## Travelling Salesman's problem
+The nearest neighbor algorithm in the TSP package was used to construct the route.
+This is the simplest algorithm, connecting each point to its closest neighbor until all points are connected. 
+It is a quick to solve algorithm, but generally does not generate the shortest route.
+2-3opt refinement can be used to optimize the route, however this also increases solve-time and was not used. 
+```{r}
+
+# run TSP on sample of the data
+# plot to show how TSP works
+
+```
+
+
+
+## Separate Large clusters
+Large clusters (over 10,000 points) use too much memory to solve the TSP instance.
+These are split into quadrants and TSP was run separately on each quadrant. 
+Occasionally, some quadrants are still too large, these are then split again into quadrants. 
+All quadrants/subquadrants are connected in a prespecified order (shown below) that forms a clockwise loop to estimate VMT
+```{r}
+
+# show the quadrants/subquadrant diagram
+
+```
+
+```{r}
+
+# show the actual cluster being split
+
+```
+
+```{r}
+
+# estimate final VMT
+
+```
+
+
+# Estimate GHG emissions
+Data sources:
+```{r}
+
+# set up constants
+
+```
+
+## Scenario 1 (Less Efficient AD)
+If the AD is allocated FW over its capacity, it is assumed to run blah blah
+
+## Sceanrio 2 (Larger AD)
+If the AD is allocated FW over its capacity, it is assumed a larger AD is placed there that can run at maximum efficeiency. 
