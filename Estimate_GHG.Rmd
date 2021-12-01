@@ -16,17 +16,19 @@ knitr::opts_chunk$set(echo = TRUE)
 
 This file shows how GHG emissions are calculated for a model's solution
 
-Vehicle Miles Travelled (VMT) is calculated using the Travelling Salesman's Problem routing algorithm  
 
-Two scenarios are used to estimate GHG emissions of the systems:  
-- Scenario 1 (Less Efficient AD) uses a discount factor to reduce efficiency of biogas production if AD is overfilled
+Vehicle Miles Travelled (VMT) is calculated using the Travelling Salesman's Problem routing algorithm, 
+VMT is used to calculate GHG emissions associated with collection and transportation.  
+
+Two scenarios are used to estimate GHG emissions of the system. These differ in biogas generation.    
+- Scenario 1 (Less Efficient AD) uses a discount factor to reduce efficiency of biogas production if AD is overfilled  
 - Scenario 2 (Larger AD) estimates GHG emissions of a system where all ADs are at maximum efficiency
 
-Data sources for GHG emissions are shown
+Data sources for GHG emissions are also shown
 
 # Setup
 ## Load libraries
-```{r}
+```{r, warning = FALSE, message = FALSE}
 # for spatial data
 library(sp)
 library(raster)
@@ -34,23 +36,26 @@ library(raster)
 # for sample data built into package
 library(spData)
 
-# for visualizing principal direction
-library(ggfortify)
 
 library(TSP) # for estimating collection route
-
-
 
 ```
 
 ## Load data
-The data loaded here is built-in spatial points that substitutes for one cluster in the M3 model's solution.  
-They have been given a random "FW_dis" (tons FW disposed annually) value to fill in for the "FW Geography" dataset.  
+The data loaded here is built-in spatial points dataset from the spData package.
+It will fill in for the "FW Geography" (FWG) dataset that represents FW disposal in LA County used in the study.  
+
+Each point has been given a random "FW_dis" (tons FW disposed annually) value to work with the model's functions.  
+
+In this file, the entire house dataset will serve as a single cluster. 
+This, and the weighted center representing the AD are in a single variable called "cluster". 
+This variable is a named list which holds the FW points (BUS) and the weighted center (AD). 
+This type of variable/object is used throughout the model, and I call it a "kmeans_result"
 ```{r}
 
 set.seed(666) # for random number generation
 
-
+# ~~~~~~~~ Sample cluster ~~~~~~~~~~~~~~~~~ #
 # Data on 25,357 single family homes sold in Lucas County, Ohio, 1993-1998
 # we are pretending they are commercial businesses, not houses
 data(house)
@@ -89,9 +94,7 @@ wc <- SpatialPointsDataFrame(coords = t(as.matrix(wc)), data = coord_df, proj4st
 # create a FW_kmeans object (named list)
 cluster <- list(AD = wc, BUS = house)
 
-
-
-str(cluster$BUS)
+# plot
 plot(cluster$BUS, pch = 19, col = "black", main = paste0("sample cluster | num points: ", nrow(house)))
 points(cluster$AD, pch = 24, col = "black", bg = "red")
 
@@ -118,7 +121,7 @@ It is a quick to solve algorithm, but generally does not generate the shortest r
 2-3opt refinement can be used to optimize the route, however this also increases solve-time and was not used. 
 
 ### Sample TSP - 100 points
-```{r}
+```{r, echo = FALSE}
 
 set.seed(666)
 
@@ -129,24 +132,21 @@ tsp_obj <- as.ETSP(cluster$BUS@coords[sample(nrow(cluster$BUS), 100),])
 # solve TSP w/ nearest neighbor and no-2opt refinement
 res <- solve_TSP(tsp_obj, method = "nn", control = c(two_opt = FALSE))
 
-
-# find length of overall tour (in miles)
-tour_length(res, tsp_obj)/5280
-
 # plot the output
-plot(tsp_obj, res, main = paste0("Sample Tour length: ", round(tour_length(res, tsp_obj)/5280, 2), " miles"))
+plot(tsp_obj, res, main = paste0("Sample Tour (100 points) | Length: ", round(tour_length(res, tsp_obj)/5280, 2), " miles"))
 
 
 
 ```
 
+A sample route of the nearest neighbor algorithm with no post-hoc route refinement.
 
 ## Separate Large clusters
 Large clusters (over 10,000 points) use too much memory to solve the TSP instance.
 These are split into quadrants and TSP was run separately on each quadrant. 
 Occasionally, some quadrants are still too large, these are then split again into subquadrants. 
 
-### Actual clusters
+### Split along cardinal directions
 ```{r}
 
 
@@ -241,14 +241,14 @@ cardinalSplit <- function(cluster2, nsplit2) {
       
 } # close cardinalSplit()
 
-# split the cluster as needed
+# run cardinalSplit() over the cluster
 points_list <- cardinalSplit(cluster$BUS, nsplit2 = 10000)
 
-
+str(points_list)
 
 ```
 
-```{r}
+```{r, echo = FALSE}
 
 
 # bounding box sp object
@@ -296,7 +296,7 @@ points(cluster$AD, pch = 24, col = "black", bg = "red")}
 
 
 ### split into subquadrants if needed
-Note: threshold to split is from 10,000 points to 7,000 points for this example
+Note: threshold to split is from 10,000 points to 7,000 points for this example as the current cluster does not need subquadrants
 ```{r}
 
 # run through the list, get size of each list
@@ -324,7 +324,7 @@ if (sum(num_points > 7000) > 0) {
 
 ```
 
-```{r}
+```{r, echo = FALSE}
 
 {plot(cluster$BUS, pch = 19, col = "grey", main = "cluster quadrants")
 points(points_list[[1]], pch = 19, col = "blue")
@@ -340,15 +340,14 @@ plot(ly, add = TRUE, lwd = 2)
 points(cluster$AD, pch = 24, col = "black", bg = "red")}
 
 ```
+
 NE quadrant split into subquadrants.
 (need to draw those lines)
 
 ## Estimate VMT
-
-### Quadrant order
-If the cluster is split, TSP is run separately on each (sub)quadrant. 
+The TSP package is used to generate a route. 
 All quadrants/subquadrants are connected in a prespecified order (shown below) that forms a clockwise loop to estimate VMT.
-```{r}
+```{r,echo=FALSE}
 
 lab <- data.frame(x = c(40,10,10,40,60,90,90,60,60,90,90,60,40,10,10,40),
                   y = c(60,60,90,90,90,90,60,60,40,40,10,10,10,10,40,40),
@@ -374,10 +373,12 @@ abline(v = 25, lwd = 1)
 
 ```
 
+
 ### Run TSP function
-The run_TSP() function uses the TSP package to estimate a tour.  
-Sometimes, splitting a cluster into quadrants results in an empty quadrant, so run_TSP() checks for that.   
-This is because the clsuter is split along cardinal directions (N,S,E,W). 
+run_TSP() generates the route.  
+Sometimes, splitting a cluster into quadrants results in an empty quadrant, so run_TSP() checks for that 
+and skips over the empty one.   
+Empty quadrants occur because the cluster is split along cardinal directions (N,S,E,W). 
 Splitting the cluster along its principal direction might prevent this problem.  
 ```{r}
 
@@ -421,8 +422,8 @@ run_TSP <- function(clust, close_pnt) {
 
 ```
 
-The run_TSP() function is ran over the points_list in a loop.  
-The individual routes are connected to form a loop based on the distance from the end point of one route to the start point of the next. The distance to and from the AD is also added
+The run_TSP() function is ran over the points_list in a code loop.  
+The individual routes are connected to form a route based on the distance from the end point of one route to the start point of the next. The distance to and from the AD is also added.  
 ```{r}
 
  # order the list by their name to get circle to go the right way
@@ -483,7 +484,8 @@ print(paste0("Total Collection Route: ", round(route_dist, 2), " miles"))
 
 # Estimate GHG emissions
 GHG emissions are calculated for a single AD at a time. 
-run_TSP() is used to get the VMT of the cluster for collection/hauling (above)
+run_TSP() (above) is used to get the VMT of the cluster for collection/hauling emissions  
+
 ## Set up constants
 ```{r}
 
@@ -516,7 +518,7 @@ GHG_fuel_use <- (0.46+(0.00007*296))/2700
 ```
 
 ## Calculate GHG Component Constants
-These values are dependent on the amount of FW diverted from landfills
+These values are dependent on the amount of FW diverted from landfills and are the same in both scenarios  
 ```{r}
 
 # avoided landfill gas by FW diversion [kg CO2e/year]
@@ -538,7 +540,8 @@ CO2e_collect <-  52 * ((cluster$AD$FW_dis_kg/52) * cluster$AD$collect_dist_mi * 
 
 
 ## Scenario 1 (Less Efficient AD)
-Scenario 1, all FW goes to digestor, but AD less efficient if overfilled (reduced biogas generation)
+Scenario 1, all FW goes to digestor, but AD less efficient if overfilled (reduced biogas generation). 
+A discount factor that accounts for the faster throughput of FW through the AD is applied to methane generation.
 ```{r}
 
 # ~~~~~~ From Sara's email ~~~~~~~~~~~
