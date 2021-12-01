@@ -21,7 +21,7 @@ Two methods are shown, the "splitting function" (which splits the cluster in hal
 
 # Setup
 ## Load libraries
-```{r}
+```{r, warning = FALSE, message = FALSE}
 # for spatial data
 library(sp)
 library(raster)
@@ -32,13 +32,16 @@ library(spData)
 # for visualizing principal direction
 library(ggfortify)
 
-# source the functions file
+
 
 ```
 
+
 ## Load data
-The data loaded here is built-in spatial points that will fill in for the "FW Geography" dataset.  
-They have been given a random "FW_dis" (tons FW disposed annually) value to work with the model's functions.  
+The data loaded here is built-in spatial points dataset from the spData package.
+It will fill in for the "FW Geography" (FWG) dataset that represents FW disposal in LA County used in the study.  
+
+Each point has been given a random "FW_dis" (tons FW disposed annually) value to work with the model's functions.  
 ```{r}
 
 set.seed(666) # for random number generation
@@ -58,16 +61,74 @@ house$idx <- 1:nrow(house)
 house <- house[,which(names(house) %in% c("idx","FW_dis"))]
 
 
-str(house)
+
 plot(house, pch = 19, col = "black", main = "sample FWG")
 
 
 ```
 
 ## Generate FW clusters
-Clusters of points are generated using the kmeans algorithm, which is an input into the M3 model.   
-These clusters are for example purposes. AD cap is set to 5k to get 13 clusters.
-```{r}
+The FW_kmeans() function is used to generate clusters for this example document.  
+
+AD capacity is set to 5000 tons/year, which will generate 13 clusters.
+```{r, message = FALSE}
+
+# FW_kmeans() performs kmeans clustering and calculates FW_gen & FW_dis for each cluster
+# @param Bus_pnts - business points w/ assigned FW in the cluster
+# @param AD_cap - the capacity of the ADs to be placed
+# Returns a named list ("object" type I call a kmeans_result/km_res)
+# [1] BUS - the business cluster (spdf)
+# [2] AD - cluster centroids representing the AD (spdf), this section contains the data about the cluster
+FW_kmeans <- function(Bus_pnts, AD_cap) {
+    
+    
+    # calculate number of ADs needed
+    # rounded up, the 1.0 means we are capturing 100% of FW
+    cent <- ceiling((sum(Bus_pnts$FW_dis) * 1.0) / AD_cap)
+    
+    
+    message(paste0(cent, " clusters"))
+    
+    # Convert to matrix
+    mBUS <- as.matrix(Bus_pnts@coords)
+    
+    
+    # kmeans from stats package
+    kmcluster <- kmeans(mBUS, centers = cent, iter.max = 500, nstart = 1)
+    
+    
+    # Create df to add coords to
+    AD <- data.frame(AD_code = paste0("x",1:nrow(kmcluster$centers)))
+    coordinates(AD) <- kmcluster$centers
+    
+    AD@proj4string <- Bus_pnts@proj4string
+    
+    AD$initial_K <- cent
+    AD$AD_cap <- AD_cap
+    
+    
+    # Add cluster group to each BUS point
+    BUS <- "empty"
+    BUS <- cbind(Bus_pnts, paste0("x",as.factor(kmcluster$cluster))) 
+    colnames(BUS@data)[ncol(BUS@data)] <- c("AD_code")
+    
+    
+    # calculate FW in each cluster
+    AD$FW_gen <- sapply(AD$AD_code, function(x) sum(BUS$FW_gen[BUS$AD_code == x]))
+    AD$FW_dis <- sapply(AD$AD_code, function(x) sum(BUS$FW_dis[BUS$AD_code == x]))
+    
+    
+    
+    ret <- list(AD, BUS)
+    names(ret) <- c("AD", "BUS")
+    
+    
+    return(ret)
+} #close FW_kmeans()
+
+
+
+
 
 set.seed(666) # repeatable
 
@@ -76,7 +137,6 @@ set.seed(666) # repeatable
 ## and their centroids/the AD with information about the cluster (AD)
 km_house <- FW_kmeans(house, 5000)
 
-str(km_house$AD@data)
 
 # plot the result
 plot(km_house$BUS, col = as.factor(km_house$BUS$AD_code), pch = 20, 
@@ -86,11 +146,9 @@ points(km_house$AD, pch = 24, col = "white", bg = "black")
 ```
 
 # Splitting clusters
-If a cluster is over 140% full, it can be split equally with both new clusters above the 70% minimum
-
-These are split perpendicularly to the principal direction through the weighted center.  
-If the split does not create relatively equal sized clusters, it will be moved incrementally until both clusters are equal  
-within 5% of the total FW within the cluster. 
+If a cluster is over 140% full, it can be split equally with both new clusters above the 70% minimum operating capacity of the AD  
+Clusters are split perpendicularly to the principal direction through the weighted center.  
+If the split does not create relatively equal sized clusters, it will be moved incrementally towards the larger cluster until both clusters are equal (within 5% of the total FW within the cluster form one another). 
 
 
 ## Sample cluster
@@ -112,9 +170,9 @@ plot(cluster, pch = 20, col = "black",
 ```
 
 ## PCA for Principal Direction
+Principal Component Analysis (PCA) is used on the coordinates to determine the principal direction of the cluster. 
 ```{r}
 
- # trying to split evenly in half
 # get the target FW before splitting the cluster, will need later
 target_FW <- sum(cluster$FW_dis) / 2
 
@@ -129,87 +187,94 @@ pc_mat <- matrix(as.numeric(pc$loadings), ncol = 2)
 # row/col names
 colnames(pc_mat) <- c("x", "y")
 
+# loadings matrix for the two eigenvectors
 pc_mat
 
+
+# plot the cluster/eigenvectors
 autoplot(object = pc, loadings = TRUE,  main = "PCA (cluster coordinates)")
 
 
 ```
-To get principal direction, PCA is done on the cluster coordinates.  
-The angle of the eigenvectors gives the information about principal direction
 
-NOTE: this plot has been turned 90 degrees clockwise
+  
+The angle of the eigenvectors gives the information about principal direction.  
+NOTE: this plot has been turned 90 degrees clockwise for some reason.
 
 ## Calculate angles of loading matrix
-The angle from the X axis (from East) is calculated for the principal direction (PD).  
+The angle from the X axis (from East) is calculated for the principal direction (PD) (largest eigenvector).  
 Other angles are determined by adding 90 degrees to this value.  
 
-The weighted center of the cluster and the bounding box coordinates are also generated here
+The weighted center of the cluster and the bounding box coordinates are also determined here.  
 ```{r}
 
 ##### Angles ######
 
 # get theta function. Returns theta when given the loadings matrix
-  get_theta <- function(i) {
-      
-    rad2deg <- function(rad) {(rad * 180) / (pi)} 
-     
-    t <- atan2(i["y"], i["x"]) # find angle from x axis
-    t <- rad2deg(t) # convert to degrees
-    #t <- 90 - t # angle from north, commented out, want angle from east
-    return(t)
-  } # close get_theta()
-  
-  # get the angle from x axis of the PD
-  # PD is the eigenvector with max standard dev
-  theta <- get_theta(pc_mat[which(pc$sdev == max(pc$sdev)),])
-  
-  # get the other angles by adding 90
-  theta <- c(theta, theta + 90, theta + 180, theta + 270)
-  
-  # if the principle direction is in Q2 (Northwest), then the 4th theta (one that would be in Q1) is over 360
-  # subtract 360 from it to get angles between 0-360 degrees
-  if (theta[1] > 90) {
-    theta[4] <- theta[4] - 360
-  }
+get_theta <- function(i) {
+    
+  rad2deg <- function(rad) {(rad * 180) / (pi)} 
+   
+  t <- atan2(i["y"], i["x"]) # find angle from x axis
+  t <- rad2deg(t) # convert to degrees
+  #t <- 90 - t # angle from north, commented out, want angle from east
+  return(t)
+} # close get_theta()
+
+# get the angle from x axis of the PD
+# PD is the eigenvector with max standard dev
+theta <- get_theta(pc_mat[which(pc$sdev == max(pc$sdev)),])
+
+# get the other angles by adding 90 degrees
+theta <- c(theta, theta + 90, theta + 180, theta + 270)
+
+# if the principle direction is in Q2 (Northwest), then the 4th theta (one that would be in Q1) is over 360
+# subtract 360 from it to get angles between 0-360 degrees
+if (theta[1] > 90) {
+  theta[4] <- theta[4] - 360
+}
   
 
-##### Weighted Center
-  weightedCenter <- function(cluster1) {
-        # get weighted center
-        wcx <- weighted.mean(x = cluster1@coords[,1], 
-                         w = cluster1$FW_dis)
-        
-        wcy <- weighted.mean(x = cluster1@coords[,2], 
-                         w = cluster1$FW_dis)
-        return(c(wcx, wcy))
-  } # close weighted center
+##### Weighted Center of cluster (AD location)
+weightedCenter <- function(cluster1) {
+  # get weighted center
+  wcx <- weighted.mean(x = cluster1@coords[,1], 
+                   w = cluster1$FW_dis)
   
-  wc <- weightedCenter(cluster)
+  wcy <- weighted.mean(x = cluster1@coords[,2], 
+                   w = cluster1$FW_dis)
+  return(c(wcx, wcy))
+} # close weightedCenter
+
+wc <- weightedCenter(cluster)
   
   
   
-##### Bounding box #######
+##### Bounding box of cluster #######
   
-  # get bounding box
-  bb <- cluster@bbox
-  
-  # change rownames to remember which one is which
-  rownames(bb) <- c("EW", "NS")
- 
+# get bounding box
+bb <- cluster@bbox
+
+# change rownames to remember which one is which
+rownames(bb) <- c("EW", "NS")
+
 
 
 # bbox has the coordinates of the corners of the bbox
+# the bbox is used as a boundary for the split polygon that splits the cluster
 bb
+```
+
+```{r, echo = FALSE}
 
 # make an sp object of bbox for plotting
 bbox_sp <- as.matrix(rbind(c(bb[1,1], bb[2,2]), # NW
-                 c(bb[1,2], bb[2,2]), # NE
-                 c(bb[1,2], bb[2,1]), # SE
-                 c(bb[1,1], bb[2,1]))) # SW
+                           c(bb[1,2], bb[2,2]), # NE
+                           c(bb[1,2], bb[2,1]), # SE
+                           c(bb[1,1], bb[2,1]))) # SW
 colnames(bbox_sp) <- c("x_coord", "y_coord")
 
-
+# polygon for plotting bbox
 bbox_sp <- Polygon(bbox_sp)
 bbox_sp <- Polygons(list(bbox_sp), 1)
 bbox_sp <- SpatialPolygons(list(bbox_sp))
@@ -217,33 +282,34 @@ bbox_sp@proj4string <- house@proj4string
 
 
 
- 
+# plot cluster, wc, bbox, and note the eigenvector angles
 plot(cluster, pch = 20, col = "black", 
      main = "Sample Cluster w/ Weighted Center and bbox")
 points(wc[1], wc[2], pch = 24, col = "black", bg = "red")
 plot(bbox_sp, add = TRUE)
-legend("bottomleft", legend = round(theta), title = "PD angles")
+legend("bottomleft", legend = round(theta), title = "Calculated PD angles")
 
 
 ```
 
-bb is a matrix that tells the min and max coordinates for lat (EW) and long (NS) of the bounding box
+
+Now that we have the angles of the eigenvectors, the weighted center, and the bbox, we can begin to split the cluster
 
 
-Now that we have the angles of the eigenvectors, the weighted center, and the bbox, we can split the cluster
+## Establish eigenvector/bbox intersections
+To split the cluster, a polygon that covers half the cluster is needed to use with the over() (spatial join) function.  
 
-
-## Corners of polygon used to split cluster
-To draw the splitting polygon, we need to establish the corners of the polygon.  
-These are points on the bbox at the angles of the eigenvectors (measured from the East axis) with the weighted center at the vertex of the angle  
+To draw the splitting polygon, we need to establish the where the eigenvector angles intersect the bbox.
+These will be used as corner points for drawing the split_poly
 ```{r}
 
 # function to get the PD point coords on the bbox for a single eigenvector angle at a time
 # @param theta - the eigenvector angle to get the PD coord for. 
 # @param bb1 - the bbox matrix
+# Returns point coordinates for the split poly corners
 getPDpointCoords <- function(theta, bb1 = bb) {
         
-    # the quadrant the eigenvector angle is in determines what coordinates are chosen for x&y
+    # the quadrant the eigenvector angle is in determines what coordinates are chosen for x&y (taken from bbox)
     # trigonometry is used to determine where on the bbox to put the PD point in relation to the (weighted) center
     
     if (theta > 45 && theta < 135) {
@@ -317,9 +383,9 @@ getPDpointCoords <- function(theta, bb1 = bb) {
     
 } # close getPDpointCoords
 
-# get the PD points for each theta
+# get the PD points for each theta using lapply
 coord_mat <- do.call(rbind, lapply(theta, getPDpointCoords))
-rownames(coord_mat) <- round(theta) # not super needed, just helps keep things straight
+rownames(coord_mat) <- round(theta) # not super needed, just helps me keep things straight
 
 
 
@@ -329,29 +395,29 @@ coord_df <- data.frame(OID = 1:4,
                        theta = round(theta),
                        type = c("PD", "opp", "PD", "opp"),
                        PC_sdev = c(max(pc$sdev), min(pc$sdev), max(pc$sdev), min(pc$sdev)))
+
 # create sp object
 pd <- SpatialPointsDataFrame(coords = coord_mat, data = coord_df, proj4string = house@proj4string)
 
-
+# plot PD points
 plot(cluster, pch = 20, col = "black", 
      main = "cluster w/ PD points")
 points(wc[1], wc[2], pch = 24, col = "black", bg = "red")
 plot(bbox_sp, add = TRUE)
 points(pd, pch = 19, col = "black")
 points(pd, pch = 20, col = c("red", "blue", "yellow", "green"))
-line(pd[1]@coords, pd[3]@coords)
 legend("bottomleft", pch = 20, col = c("red", "blue", "yellow", "green"),
        legend = round(theta), title = "PD angles")
 
 
-
-pd
 ```
 
 ## Split the cluster
+The cluster is split by building the split poly using 5 of the points established above.
+These points include 2 bbox corners, the weighted center, and the endpoints of the line perpendicular to the principal direction
 ```{r}
 
-##### establish which line is the split line #####
+#~~~~~~~~~~~~~~~ establish which line is the split line ~~~~~~~~~~~~~~~~ #
 # this is determined by the distance between the two points, get split on shorter one
 pd$length <- 999 #dummyvar
 
@@ -367,9 +433,7 @@ pd$type[pd$length == min(pd$length)] <- "split"
 # determine distance to weighted center
 pd$dist_to_wc <- pointDistance(wc, pd, lonlat = FALSE)
 
-###### form splitting polygon ######
-
-
+#~~~~~~~~~~~~~~~~~~ form splitting polygon ~~~~~~~~~~~~~~~~~~~~~~~~~~ #
 # createSplitPoly() creates the polygon to use to split the cluster
 # @param pd_pnts - sp object representing the PD points of the cluster
 # @param bb_pnts - an sp object representing the bbox corners
@@ -438,7 +502,7 @@ split_poly <- createSplitPoly(pd, bbox_corners)
 poly_points <- split_poly$poly_points
 split_poly <- split_poly$split_poly
 
-# split the cluster polygon 
+#~~~~~~~~~~~~~~~~~~~~~~~~~~ split the cluster using the split_poly ~~~~~~~~~~~~~~~~~~~~~~~~~~# 
 
 # get what BUS points are in the split_poly and which are outside
 cluster$split <- over(cluster, split_poly)
@@ -472,21 +536,21 @@ When running the principal direction split function in M3, it is done in a repea
 After splitting, the function checks that the FW has been split relatively evenly (w/in 5% of total cluster FW)  
 If it has, the loop breaks and the model moves on to the next cluster.  
 
-If it has not been split evenly, the function will move the split line towards the direction of the larger cluster at a user-specified incremental amount (given as a parameter to the model).  
+If it has not been split evenly, the function will move the split line towards the direction of the larger cluster at a user-specified incremental amount (given as a parameter to the model).
+In this case, the line needs to be moved towards the red cluster.  
 This is line is moved until the cluster is split evenly.  
 
+Note: This chunk just draws a new line (l). The real function modifies the split poly, resplits the cluster, and checks that is it even again.
 ```{r}
-
-
-# this chunk just draws a new line. The real function modifies the split poly
 
 # coordinates of split poly corners
 split_coords <- split_poly@polygons[[1]]@Polygons[[1]]@coords
 
-# move all the Ys up 10
-split_coords[,2] <- split_coords[,2] + 500
+# move all the Ys up (north) 500 feet
+split_coords[,2] <- split_coords[,2] - 500
 
-# spatial lines object to plot
+# the real function in the model uses the new split_coords to change the split_poly and resplit the cluster
+# here, we just create a spatial lines object to plot
 l <- SpatialLines(list(Lines(list(Line(rbind(split_coords[3,], 
                                              split_coords[2,]))), 1)))
 
@@ -499,11 +563,6 @@ plot(split_poly, lwd = 2, add = TRUE)
 plot(l, add = TRUE, lty = 3, col = "black")
 points(wc1[1], wc1[2], pch = 24, col = "black", bg = "white")
 points(wc2[1], wc2[2], pch = 24, col = "black", bg = "white")
-# legend("bottomleft", pch = 19, col = c("blue", "red"),
-#        legend = c(paste0("x7-1: ", round(check_df$FW_dis[2])), 
-#                   paste0("x7-2: ", round(check_df$FW_dis[1]))))
-
-
 
 
 ```
@@ -513,18 +572,18 @@ In this case, the splitting function will cut the distance to move the line in h
 
 # Grabbing function
 
-The other method of moving FW between clusters is the grabbing function.
+The other method of moving FW between clusters is the grabbing function which simply moves FW between adjacent ADs.  
 
-This works by creating concentric circles from the AD of the cluster to grab FW.  
-The cumulative amount of FW is calculated for each ring,  
-when the cumulative FW equals the amount of FW to be moved, FW points are reclassified to to the grabbing cluster's AD code
+This works by creating concentric circles from the AD of the cluster to grab FW.
+The cumulative amount of FW is calculated for each ring, and FW points are reclassified to the grabbing cluster's AD code when it is full.  
 
-This is based on Ripley's K function, which is why I call it FWd
+(This method is inspired by Ripley's K function)  
 
 ## Sample clusters
-Cluster 1 from splitting function used (AD_code x7)
-and cluster w/ AD code x1 will be used (it is adjacent to x7)
-```{r}
+Two sample clusters are needed in this example. Cluster x1 and x7 are adjacent.  
+
+In this example, the red cluster will be taking FW from the blue cluster.
+```{r, echo = FALSE}
 
 cluster2 <- km_house$BUS[km_house$BUS$AD_code == "x1",]
 
@@ -536,29 +595,7 @@ points(km_house$AD[km_house$AD$AD_code %in% c("x1", "x7"),], pch = 24, col = "bl
 
 ```
 
-Cluster x7 is "grabbing" FW from cluster x1
-
-## Draw concentric circles
-```{r}
-
-
-plotCircle <- function(x, y, r) {
-  angles <- seq(0,2*pi,length.out=360)
-  lines(r*cos(angles)+x,r*sin(angles)+y)
-}
-
-
-plot(km_house$BUS[km_house$BUS$AD_code %in% c("x1", "x7"),], pch = 20, col = "grey", main = "draw circles")
-points(cluster, pch = 20, col = "red")
-points(cluster2, pch = 20, col = "blue")
-points(km_house$AD[km_house$AD$AD_code %in% c("x1", "x7"),], pch = 24, col = "black", bg = "white")
-lapply(seq(1,10000, 500), function(x) plotCircle(km_house$AD[km_house$AD$AD_code == "x7",]@coords[1],
-                                                    km_house$AD[km_house$AD$AD_code == "x7",]@coords[2], x))
-
-
-```
-
-## Calculate cumulative FW
+## Draw Circles, calculate cumulative FW
 ```{r}
 
 #FWd_func_one_point() - returns the cumulative FW as a function of distance from the a specified AD point.
@@ -591,11 +628,12 @@ FWd_func_one_point <- function(point, other_BUS, radius = seq(1, 264000, 1000)) 
 
 FWd <- FWd_func_one_point(point = km_house$AD[km_house$AD$AD_code == "x7",], 
                           other_BUS = km_house$BUS[km_house$BUS$AD_code == "x7",],
-                          seq(1,10000, 500))
+                          radius = seq(1,10000, 500))
 
 
-FWd
-               
+```
+
+```{r, echo = FALSE}
 
 
 plot(FWd$kdist, FWd$FWd, type = 's',
@@ -606,17 +644,32 @@ abline(h = 5000, col = "red")
 abline(v = max(FWd$kdist[FWd$FWd < 5000]), lty = 2)
 
 
+plotCircle <- function(x, y, r) {
+  angles <- seq(0,2*pi,length.out=360)
+  lines(r*cos(angles)+x,r*sin(angles)+y)
+}
+
+
+plot(km_house$BUS[km_house$BUS$AD_code %in% c("x1", "x7"),], pch = 20, col = "grey", main = "draw circles")
+points(cluster, pch = 20, col = "red")
+points(cluster2, pch = 20, col = "blue")
+points(km_house$AD[km_house$AD$AD_code %in% c("x1", "x7"),], pch = 24, col = "black", bg = "white")
+lapply(seq(1,10000, 500), function(x) plotCircle(km_house$AD[km_house$AD$AD_code == "x7",]@coords[1],
+                                                    km_house$AD[km_house$AD$AD_code == "x7",]@coords[2], x))
+
+
+
+
 ```
 
 
 ## Reclassify points
-Points within the distance get reclassified to the new AD
+The cutoff distance is determined by the capacity of the AD (shown in red on stepplot above).
+Points within this distance get reclassified to the new AD
 ```{r}
 
 # add FW already in adjacent AD to the FWd df
 FWd$FWd_plus <- FWd$FWd + km_house$AD$FW_dis[km_house$AD$AD_code == "x7"]
-
-
 
 
         
@@ -637,13 +690,9 @@ km_house$BUS$pt_dist[km_house$BUS$AD_code == "x1"] <- d
 km_house$BUS$AD_code[km_house$BUS$AD_code == "x1" & km_house$BUS$pt_dist <= 5000] <- "x7"
 
 
-# # change AD location for of_AD
-# weighted_center(of_AD$AD_code)
-# 
-# # change AD location for adjacent
-# weighted_center(sing_adj_AD$AD_code)
 
 
+# plot
 plot(km_house$BUS[km_house$BUS$AD_code %in% c("x1", "x7"),], pch = 20, col = "grey", main = "grab FW")
 points(km_house$BUS[km_house$BUS$AD_code == "x1",], pch = 20, col = "blue")
 points(km_house$BUS[km_house$BUS$AD_code == "x7",], pch = 20, col = "red")
@@ -654,3 +703,6 @@ lapply(seq(1,10000, 500), function(x) plotCircle(km_house$AD[km_house$AD$AD_code
 
 ```
 
+The weighted center is used to determine new AD locations (not shown). 
+In this example, there is very little of the blue cluster left. 
+Most likely, its FW will be distributed to other adjacent ADs in later iterations and the blue cluster will be removed
