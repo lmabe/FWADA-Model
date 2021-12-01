@@ -15,19 +15,17 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 
-This file shows the steps to determining adjacency for the M3 model.  
-As the model runs, the adjacency matrix for a cluster is generated as needed.  
-In this file, the example AD has AD_code x1.  
+Establishing adjacency between clusters is important for the grabbing function.  
+This file shows the steps to determining adjacency used in the M3 model. 
+As the model runs, the adjacency matrix (vector) for a single cluster is generated as needed.  
 
 At each step of the adjacency calculation, plots are made to visually show the method.  
 The functions within each chunk therefore build on one another as new code is added to show new steps.  
 
-This file can be knit and shown as a pdf/html, however, it may be easier to use interactively within R-Studio.  
-
 
 # Setup
 ## Load Packages and Functions
-```{r}
+```{r, warning = FALSE, message = FALSE}
 
 # for spatial data
 library(sp)
@@ -36,13 +34,14 @@ library(raster)
 # for sample data built into package
 library(spData)
 
-# source the functions file
 
 ```
 
 ## Load data
-The data loaded here is built-in spatial points that will fill in for the "FW Geography" dataset.  
-They have been given a random "FW_dis" (tons FW disposed annually) value to work with the model's functions.  
+The data loaded here is built-in spatial points dataset from the spData package.
+It will fill in for the "FW Geography" (FWG) dataset that represents FW disposal in LA County used in the study.  
+
+Each point has been given a random "FW_dis" (tons FW disposed annually) value to work with the model's functions.  
 ```{r}
 
 set.seed(666) # for random number generation
@@ -62,18 +61,67 @@ house$idx <- 1:nrow(house)
 house <- house[,which(names(house) %in% c("idx","FW_dis"))]
 
 
-str(house)
+
 plot(house, pch = 19, col = "black", main = "sample FWG")
 
 
 ```
-test
 
 
 ## Generate FW clusters
-Clusters of points are generated using the kmeans algorithm, which is an input into the M3 model.   
-These clusters are for example purposes. AD cap is set to 5k to get 13 clusters.
-```{r}
+The FW_kmeans() function is used to generate clusters for this example document.  
+
+AD capacity is set to 5000 tons/year, which will generate 13 clusters.
+```{r, message = FALSE}
+
+# FW_kmeans() performs kmeans clustering and calculates FW_gen & FW_dis for each cluster
+# @param Bus_pnts - business points w/ assigned FW in the cluster
+# @param AD_cap - the capacity of the ADs to be placed
+# Returns a named list ("object" type I call a kmeans_result/km_res)
+# [1] BUS - the business cluster (spdf)
+# [2] AD - cluster centroids representing the AD (spdf), this section contains the data about the cluster
+FW_kmeans <- function(Bus_pnts, AD_cap) {
+    
+    
+    # calculate number of ADs needed
+    # rounded up, the 1.0 means we are capturing 100% of FW
+    cent <- ceiling((sum(Bus_pnts$FW_dis) * 1.0) / AD_cap)
+    
+    message(paste0(cent, " clusters"))
+    
+    # Convert to matrix
+    mBUS <- as.matrix(Bus_pnts@coords)
+    
+    # kmeans from stats package
+    kmcluster <- kmeans(mBUS, centers = cent, iter.max = 500, nstart = 1)
+    
+    # Create df to add coords to
+    AD <- data.frame(AD_code = paste0("x",1:nrow(kmcluster$centers)))
+    coordinates(AD) <- kmcluster$centers
+    
+    AD@proj4string <- Bus_pnts@proj4string
+    
+    AD$initial_K <- cent
+    AD$AD_cap <- AD_cap
+    
+    # Add cluster group to each BUS point
+    BUS <- "empty"
+    BUS <- cbind(Bus_pnts, paste0("x",as.factor(kmcluster$cluster))) 
+    colnames(BUS@data)[ncol(BUS@data)] <- c("AD_code")
+    
+    # calculate FW in each cluster
+    AD$FW_gen <- sapply(AD$AD_code, function(x) sum(BUS$FW_gen[BUS$AD_code == x]))
+    AD$FW_dis <- sapply(AD$AD_code, function(x) sum(BUS$FW_dis[BUS$AD_code == x]))
+    
+    ret <- list(AD, BUS)
+    names(ret) <- c("AD", "BUS")
+    
+    
+    return(ret)
+} #close FW_kmeans()
+
+
+
 
 set.seed(666) # repeatable
 
@@ -82,7 +130,6 @@ set.seed(666) # repeatable
 ## and their centroids/the AD with information about the cluster (AD)
 km_house <- FW_kmeans(house, 5000)
 
-str(km_house$AD@data)
 
 # plot the result
 plot(km_house$BUS, col = as.factor(km_house$BUS$AD_code), pch = 20, 
@@ -90,7 +137,6 @@ plot(km_house$BUS, col = as.factor(km_house$BUS$AD_code), pch = 20,
 points(km_house$AD, pch = 24, col = "white", bg = "black")
 
 ```
-Note: some colors are repeated, however these are separate clusters
 
 
 # Determining Adjacency
@@ -105,7 +151,7 @@ only the closest pair of FW points from one cluster to another are considered.
 This is done by finding the closest BUS point from the target cluster to the original AD  
 then finding the closest BUS point from the original cluster to the target AD  
 The distance between the two points is reported as the adjacency matrix.  
-```{r}
+```{r, echo = FALSE}
 
 # plots the closest pair of points from on AD (OG - original) to another (T - target)
 # @param OG_code - Default "x1", the AD for for the OG AD (the one finding adjacency for)
@@ -152,18 +198,25 @@ plot_closest_points <- function(OG_code = "x1", T_code, km_res) {
 lapply(km_house$AD$AD_code, plot_closest_points, km_res = km_house, OG_code = "x1")
 
 ```
-The length of the red line is what is in the adjacency matrix
+
 
 
 ## Ordered adjacency matrix
+The length of the red line in plots above is what is in the adjacency matrix (vector) for a given AD.
+getDistMatRow() calculates these distances, then puts them in ascending order.  
 ```{r}
 
 # calculates the adjacency matrix row for a given AD_code
 # @param AD_code - AD to get adjacents for
 # @param kmean_res - the ADs and BUSs
+# returns a vector, the ordered distance/adjacency matrix for a given AD
 getDistMatRow <- function(AD_code, km_res) {
     
-    # this is same function as plot_closest_points (above) but without plotting
+    # plots the closest pair of points from on AD (OG - original) to another (T - target)
+    # @param OG_code - Default "x1", the AD for for the OG AD (the one finding adjacency for)
+    # @param T_code - the AD_code for the Target AD.
+    # @param km_res - a kmeans result. A named list (AD = AD, BUS = BUS)
+    # returns - the distance between closest BUS points (numeric)
     simpleClosePoints <- function(OG_code, T_code, km_res) {
     
         # get ADs
@@ -212,6 +265,11 @@ sorted <- sort(getDistMatRow("x1", km_house), FALSE)
 # This is the diagonal on a distance matrix and is x1 to x1
 sorted <- sorted[2:length(sorted)]
 
+sorted
+```
+
+```{r, echo = FALSE}
+
 par(mfrow = c(1,2), mar = c(3,4,1,1))
     
 plot(sorted, pch = 15, col = "black",
@@ -227,17 +285,18 @@ legend("bottomright", pch = 19, col = "red", legend = c("AD_code x1"))
 
 
 ```
+
 The points on the left correspond to the length of the red lines in the plots above.  
-Large "jumps" can be seen in the sorted distances.  
+Large "jumps" can be seen in the sorted distances (y axis).  
 Since the adjacency matrix uses the closest pair of points, instead of the centroids, this jump is approximately the size of the diameter of the clusters.  
 The ADs under the first jump are considered adjacent
 
-## Only adjacent ADs
+## Pick out adjacent ADs
 To give FW to adjacent ADs, the "jumps" in the ordered distance matrix need to be measured.  
 This could be done using Jenks Natural Break Algorithm, however this method requires a user-inputted number of breaks to choose (like a one-dimensional k-means clustering).  
 When the size of the clusters are known ahead of time, this is possible. However, our model creates variable sized clusters depending on desired AD capacity, therefore an "automatic" method of detecting this first "jump" is needed.  
 
-This is done by finding the difference between points in the ordered adjacency matrix and taking point where the difference is higher than the others (above 90% of standard deviation)
+To do so, the difference between points in the ordered adjacency matrix is determined, and "jumps" are identified where this difference is much higher than others (above 90% of standard deviation)
 ```{r}
 
 
@@ -262,7 +321,11 @@ cutoff <- cutoff - 1
 # get the AD_codes that will be adjacent
 adj_ADs <- names(sorted[1:cutoff])
 
+adj_ADs
 
+```
+
+```{r, echo = FALSE}
 
 # plot results
 par(mfrow = c(1,3), mar = c(3,4,1,1))
@@ -290,8 +353,7 @@ legend("bottomright", pch = 19, col = "red", legend = c("AD_code x1"))
 
 
 
-
-
 ```
+
 The middle plot shows the differences between the distances in the adjacency matrix (shown in left plot).  
 The blue line is 90% of the standard deviation of the distances. The first point over that distance corresponds with the first "jump" in the left (distance) plot. The ADs below this jump are considered adjacent (colored blue).  
