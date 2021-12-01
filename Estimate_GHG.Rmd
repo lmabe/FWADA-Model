@@ -39,7 +39,7 @@ library(ggfortify)
 
 library(TSP) # for estimating collection route
 
-# source the functions file
+
 
 ```
 
@@ -81,6 +81,7 @@ wc <- weightedCenter(house)
 # create sp object
 # create dataframe for the AD
 coord_df <- data.frame(AD_code = "x1",
+                       AD_cap = 55000,
                        FW_dis = sum(house$FW_dis))
 # create sp object
 wc <- SpatialPointsDataFrame(coords = t(as.matrix(wc)), data = coord_df, proj4string = house@proj4string)
@@ -96,6 +97,7 @@ points(cluster$AD, pch = 24, col = "black", bg = "red")
 
 
 ```
+
 
 
 # Estimate VMT
@@ -115,7 +117,7 @@ This is the simplest algorithm, connecting each point to its closest neighbor un
 It is a quick to solve algorithm, but generally does not generate the shortest route.
 2-3opt refinement can be used to optimize the route, however this also increases solve-time and was not used. 
 
-### Sample TSP
+### Sample TSP - 100 points
 ```{r}
 
 set.seed(666)
@@ -256,10 +258,6 @@ points_list <- cardinalSplit(cluster$BUS, nsplit2 = 10000)
   # change rownames to remember which one is which
   rownames(bb) <- c("EW", "NS")
  
-
-
-# bbox has the coordinates of the corners of the bbox
-bb
 
 # make an sp object of bbox for plotting
 bbox_sp <- as.matrix(rbind(c(bb[1,1], bb[2,2]), # NW
@@ -424,75 +422,195 @@ run_TSP <- function(clust, close_pnt) {
 ```
 
 The run_TSP() function is ran over the points_list in a loop.  
-The individual routes are connected to form a loop based on the distance from the end point of one route to the start point of the next
+The individual routes are connected to form a loop based on the distance from the end point of one route to the start point of the next. The distance to and from the AD is also added
 ```{r}
 
  # order the list by their name to get circle to go the right way
-    points_list <- points_list[order(names(points_list))]
-    
-    # the first time its ran, start at the point closest to the cluster AD
-    close2 <- cluster$AD@coords
-    
-    #start_idx_list <- list()
-    end_idx_list <- list()
-    #start_sp <- list()
-    end_sp <- list()
-    route_dist <- list()
-    # run the TSP over the whole thing
-    for (i in 1:length(points_list)) {
+points_list <- points_list[order(names(points_list))]
 
-      poop <- run_TSP(clust = points_list[[i]], close_pnt = close2)
-    
-      route_dist[[i]] <- poop$tour_dist
+# the first time its ran, start at the point closest to the cluster AD
+close2 <- cluster$AD@coords
 
-      
-      # if the quadrant is empty, duplicate the end SP of the previous quadrant
-      # if the NW quadrant is empty (first evaluated), end sp is the AD
-      # this is a lot of ifs....maybe should have split on PD to prevent empty quadrants??
-      if (is.na(poop$end_idx) == TRUE) {
-          if (i == 1) {
-            end_sp[[i]] <- SpatialPoints(AD_coords, cluster@proj4string)
-          } else {
-             end_sp[[i]] <- end_sp[[i-1]]
-          }
+#start_idx_list <- list()
+end_idx_list <- list()
+#start_sp <- list()
+end_sp <- list()
+route_dist <- list()
+# run the TSP over the whole thing
+for (i in 1:length(points_list)) {
+
+  poop <- run_TSP(clust = points_list[[i]], close_pnt = close2)
+
+  route_dist[[i]] <- poop$tour_dist
+
+  
+  # if the quadrant is empty, duplicate the end SP of the previous quadrant
+  # if the NW quadrant is empty (first evaluated), end sp is the AD
+  # this is a lot of ifs....maybe should have split on PD to prevent empty quadrants??
+  if (is.na(poop$end_idx) == TRUE) {
+      if (i == 1) {
+        end_sp[[i]] <- SpatialPoints(AD_coords, cluster@proj4string)
       } else {
-        end_sp[[i]] <- points_list[[i]][poop$end_idx,]
-      } # close ifelse
-    
-      # if the cluster is empty, the end_idx wil return as NA
-      # in that case, dont change the close2 point
-      if (is.na(poop$end_idx) == TRUE) {
-        close2 <- close2
-      } else {
-      # reset the close2 variable as the end point
-      close2 <- points_list[[i]][poop$end_idx,]
-      } # close ifelse
-    
-    print(paste0("Tour dist. quadrant ", i, ": ", round(poop$tour_dist, 2), " miles"))
-    } # close for loop
-    
-    # add tour lengths together
-    route_dist <- do.call(sum, route_dist)
-    
-    # also add the distance from the last stop back to the AD
-    d <- pointDistance(cluster$AD@coords, end_sp[[length(end_sp)]]@coords, lonlat = FALSE)
-    route_dist <- route_dist + (d/5280)
-    
+         end_sp[[i]] <- end_sp[[i-1]]
+      } # close inner if/else
+  } else {
+    end_sp[[i]] <- points_list[[i]][poop$end_idx,]
+  } # close ifelse
+
+  # if the cluster is empty, the end_idx wil return as NA
+  # in that case, dont change the close2 point
+  if (is.na(poop$end_idx) == TRUE) {
+    close2 <- close2
+  } else {
+   # reset the close2 variable as the end point
+    close2 <- points_list[[i]][poop$end_idx,]
+  } # close ifelse
+
+  print(paste0("Tour dist. quadrant ", i, ": ", round(poop$tour_dist, 2), " miles"))
+} # close for loop
+
+# add tour lengths together
+route_dist <- do.call(sum, route_dist)
+
+# also add the distance from the last stop back to the AD
+d <- pointDistance(cluster$AD@coords, end_sp[[length(end_sp)]]@coords, lonlat = FALSE)
+route_dist <- route_dist + (d/5280)
+
 print(paste0("Total Collection Route: ", round(route_dist, 2), " miles"))
 
 ```
 
 
 # Estimate GHG emissions
-Data sources:
+GHG emissions are calculated for a single AD at a time. 
+run_TSP() is used to get the VMT of the cluster for collection/hauling (above)
+## Set up constants
 ```{r}
 
-# set up constants
+
+#~~~~~~~ Unit Conversions ~~~~~~~~~~~#
+# collection/hauling distance
+cluster$AD$collect_dist_mi <- route_dist
+
+# convert [tons FW] into [kg FW]
+cluster$AD$AD_cap_kg <- cluster$AD$AD_cap * 907.185
+cluster$AD$FW_dis_kg <- cluster$AD$FW_dis * 907.185
+
+
+#~~~~~~ Set up constants ~~~~~~~~~~~~#
+
+# nitrogen in feedstock - [kg]
+# assuming 17% wet weight is N
+## Source: Small Scale AD GHG Calculator spreadsheet (Source: Sara data)
+cluster$AD$N_fdstck <- cluster$AD$FW_dis_kg * 0.17
+
+## Food Waste Avoided Landfill Emission Factor (0.39) from [MTCO2e/short ton waste] to [kgCO2e/kg waste]
+# Source: CCI Emissions Factor database - Food waste tab
+GHG_FLW_prevent <- 0.39 * 1000*2.2/2000
+
+# kg per mile diesel hauling (light, 6,000lbs capacity) - [kg CO2e per kg/mi]
+## Source: Small Scale AD GHG Calculator spreadsheet (Source: Sara data)
+GHG_fuel_use <- (0.46+(0.00007*296))/2700
+
 
 ```
 
-## Scenario 1 (Less Efficient AD)
-If the AD is allocated FW over its capacity, it is assumed to run blah blah
+## Calculate GHG Component Constants
+These values are dependent on the amount of FW diverted from landfills
+```{r}
 
-## Sceanrio 2 (Larger AD)
-If the AD is allocated FW over its capacity, it is assumed a larger AD is placed there that can run at maximum efficeiency. 
+# avoided landfill gas by FW diversion [kg CO2e/year]
+LFG_avoid <- cluster$AD$FW_dis_kg * GHG_FLW_prevent
+
+# nitrogen fertilizer substitution for AD digestate (avoided N production) [kg CO2e/year]
+# Source: SmallAD GHG Calculator (Sara data)
+# this is not dependent on digestor efficiency, nitrogen in FW does not change
+avoid_N_CO2e <-  cluster$AD$N_fdstck * 0.867
+
+# Transport GHGs [kg CO2e/year]
+# GHG emissions for a weekly collection route is calculated.
+# capacity limitations to the truck is ignored
+# all FW on the route (1/52nd of FW_dis) is assumed to travel the entire length of the route
+# this is then multipled by 52 to get a yearly collection value for the cluster (FWG is in units of tons/year)
+CO2e_collect <-  52 * ((cluster$AD$FW_dis_kg/52) * cluster$AD$collect_dist_mi * GHG_fuel_use)
+
+```
+
+
+## Scenario 1 (Less Efficient AD)
+Scenario 1, all FW goes to digestor, but AD less efficient if overfilled (reduced biogas generation)
+```{r}
+
+# ~~~~~~ From Sara's email ~~~~~~~~~~~
+# For non-overfilled digesters, baseline assumptions:
+# OLR_base = digester size (55,000 ton; 10,000 ton; 5,000 ton) / 365 days = [ton/days] (OLR - Organic loading rate)
+# example:  55,000 ton / 365 days = 150.7 ton/day
+# Discount Factor = 1
+
+# Overfilled Digesters:
+# OLR_new = tons / 365 days
+# example: 65,000 ton/365 days = 178 ton/day
+# Discount Factor (DF) = OLR_base / OLR_new
+# example:  150.7 ton/day / 178 ton/day = 0.85
+
+# Methane Production Calculation - add discount for all calculations
+# AD_cap_kg*0.26*0.45*DF
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~  
+
+# Base organic loading rate (daily AD capacity) [kg/day]
+OLR_base <- cluster$AD$AD_cap_kg[1] / 365
+
+# Methane generation by AD - [m3]
+# Function of volatile solids in food waste
+# assume 26% volatile solids (Zhang et al 2007, Fisgativa et al 2016)
+# assume  0.45 m3 ch4/kg VS (Bong et al 2018, Fisgativa et al 2016)
+# if FW allocated to AD higher than AD capacity, use a discount factor of OLR_base/OLR_new
+# otherwise, discount factor is 1
+cluster$AD$methane.1 <- ifelse(cluster$AD$FW_dis_kg > cluster$AD$AD_cap_kg, 
+                               cluster$AD$FW_dis_kg * 0.26 * 0.45 * (OLR_base / (cluster$AD$FW_dis_kg/365)),
+                               cluster$AD$FW_dis_kg * 0.26 * 0.45 * 1)
+
+# natural gas equivalent - [m3]
+# assuming 60% methane
+cluster$AD$NG_equiv.1 <- cluster$AD$methane.1 * 0.6
+
+# Avoided Natural Gas due to biogas generation
+# units: [kg CO2e/year]
+# Natural Gas Emissions Factor (53.12/28.32) source: Small_AD_GHG_calculator (Sara Data)
+avoid_NG_CO2e.1 = cluster$AD$NG_equiv.1 * (53.12/28.32) 
+                            
+
+
+# Scenario 1 total GHG emissions for the sample cluster
+# collection GHGs (the postitive emissions) - all other emissions (GHG credits/negative emissions)
+Scen1_GHG_CO2e_kg <- CO2e_collect - LFG_avoid - avoid_N_CO2e - avoid_NG_CO2e.1
+
+print(paste0("Scen 1 GHG for sample cluster: ", round(Scen1_GHG_CO2e_kg, 2), " kg CO2e/year"))
+```
+
+
+## Scenario 2 (Larger AD)
+If the AD is allocated FW over its capacity, it is assumed a larger AD is placed there that can run at maximum efficiency.
+```{r}
+
+# Same data sources as above
+
+# Methane generation by AD - [m3]
+cluster$AD$methane.2 <- cluster$AD$FW_dis_kg * 0.26 * 0.45
+  
+# natural gas equivalent - [m3]
+cluster$AD$NG_equiv.2 <- cluster$AD$methane.2 * 0.6
+  
+# avoided natural gas production [kg C02e / year]
+avoid_NG_CO2e.2 = cluster$AD$NG_equiv.2 * (53.12/28.32)
+
+
+# Scenario 2 total GHG production
+Scen2_GHG_CO2e_kg <- CO2e_collect - LFG_avoid - avoid_N_CO2e - avoid_NG_CO2e.2
+
+
+print(paste0("Scen 2 GHG for sample cluster: ", round(Scen2_GHG_CO2e_kg, 2), " kg CO2e/year"))
+
+
+```
+
