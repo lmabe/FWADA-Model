@@ -1,12 +1,15 @@
 ---
-title: "Calculate_GHG"
+title: "Net GHG Assessment"
 author: "Lauren Mabe"
-date: "11/30/2021"
-output: 
+date: "4-13-2022"
+output:
+  word_document:
+    toc: yes
+    toc_depth: '2'
   html_document:
     theme: journal
-    toc: true
-    toc_float: true
+    toc: yes
+    toc_float: yes
     toc_depth: 2
 ---
 
@@ -14,20 +17,13 @@ output:
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-This file shows how GHG emissions are calculated for a model's solution
+# Abstract
 
+This file explains the code of the net GHG analysis used in the study. The GHG analysis was applied to both the K-means and FWADA models at two AD capacities. Cluster Vehicle Miles Traveled (VMT) was calculated using the Traveling Salesman's Problem routing algorithm in the TSP package. Two GHG emissions scenarios were calculated that differ depending on the volume of FW in the AD. Data sources for emissions factors are listed in the code chunks.
 
-Vehicle Miles Travelled (VMT) is calculated using the Travelling Salesman's Problem routing algorithm, 
-VMT is used to calculate GHG emissions associated with collection and transportation.  
-
-Two scenarios are used to estimate GHG emissions of the system. These differ in biogas generation.    
-- Scenario 1 (Less Efficient AD) uses a discount factor to reduce efficiency of biogas production if AD is overfilled  
-- Scenario 2 (Larger AD) estimates GHG emissions of a system where all ADs are at maximum efficiency
-
-Data sources for GHG emissions are also shown
 
 # Setup
-## Load libraries
+## Libraries
 ```{r, warning = FALSE, message = FALSE}
 # for spatial data
 library(sp)
@@ -36,41 +32,31 @@ library(raster)
 # for sample data built into package
 library(spData)
 
-
 library(TSP) # for estimating collection route
 
 ```
 
-## Load data
-The data loaded here is built-in spatial points dataset from the spData package.
-It will fill in for the "FW Geography" (FWG) dataset that represents FW disposal in LA County used in the study.  
-
-Each point has been given a random "FW_dis" (tons FW disposed annually) value to work with the model's functions.  
-
-In this file, the entire house dataset will serve as a single cluster. 
-This, and the weighted center representing the AD are in a single variable called "cluster". 
-This variable is a named list which holds the FW points (BUS) and the weighted center (AD). 
-This type of variable/object is used throughout the model, and I call it a "kmeans_result"
+## Data
+A spatial points dataset from spData package is used as an example cluster. Each point is randomly assigned a FW_dis value (tons of FW disposed of annually) to substitute for the Food Waste Geography (FWG). The points represent commercial businesses that dispose of FW in Los Angeles County (BUS). The weighted center of the cluster represents the AD (AD).
 ```{r}
 
 set.seed(666) # for random number generation
 
-# ~~~~~~~~ Sample cluster ~~~~~~~~~~~~~~~~~ #
+# ~~~~~~~~ generate BUS object ~~~~~~~~~~~~~~~~~ #
 # Data on 25,357 single family homes sold in Lucas County, Ohio, 1993-1998
-# we are pretending they are commercial businesses, not houses
 data(house)
 
 # create a "FW_dis" column using random numbers from 0:5
-# this will simulate the "FW Geography" dataset
 house$FW_dis <- runif(nrow(house), 0, 5)
 
+# index column
 house$idx <- 1:nrow(house)
 
 # drop the built-in columns
 house <- house[,which(names(house) %in% c("idx","FW_dis"))]
 
 
-
+# ~~~~~~~~~ generate AD object ~~~~~~~~~~~~~~~~~~~~~~ 
 # calculate weighted center for the AD
 weightedCenter <- function(cluster1) {
         # get weighted center
@@ -81,6 +67,7 @@ weightedCenter <- function(cluster1) {
                          w = cluster1$FW_dis)
         return(c(wcx, wcy))
   } # close weighted center
+
 wc <- weightedCenter(house)
 
 # create sp object
@@ -91,8 +78,11 @@ coord_df <- data.frame(AD_code = "x1",
 # create sp object
 wc <- SpatialPointsDataFrame(coords = t(as.matrix(wc)), data = coord_df, proj4string = house@proj4string)
 
-# create a FW_kmeans object (named list)
+
+#~~~~~~~~~ cluster~~~~~~~~~~~~~
+# create a cluster object to hold AD and BUS points
 cluster <- list(AD = wc, BUS = house)
+
 
 # plot
 plot(cluster$BUS, pch = 19, col = "black", main = paste0("sample cluster | num points: ", nrow(house)))
@@ -103,24 +93,17 @@ points(cluster$AD, pch = 24, col = "black", bg = "red")
 
 
 
-# Estimate VMT
-Vehicle Miles Travelled (VMT) is calcuated separately for each cluster.
-One route is calculated which assumes the collection truck starts at the AD in the centroid,
-travels to each FW point in series,
-then returns to the AD.
-Capacity limitations to the truck are ignored.  
+# Vehicle Miles Travelled (VMT)
+VMT is estimated individually for each cluster in a model's solution using the Travelling Salesmans Algorithm in the TSP package. It is assumed that FW is collected from each business in series, starting at the AD and returning to the AD when all businesses have been visted. Capacity limitations to the truck which would require multiple return trips and increase VMT were ignored. A method to conserve memory was also developed for very large clusters. Given high number of FW generators in the FWG and the use of Monte Carlo simulation, speed of solution was prioritized over route optimally when constructing a collection route. 
 
-This method is used to estimate VMT for a weekly collection route. 
-When calculating GHG emissions, all (weekly) FW in the cluster is assumed to travel along the entire route. 
-Updates to the model would include the variable (increasing) amount of FW being transported along the route as the truck picks up more from each successive point.  
+
 
 ## Travelling Salesman's problem
-The nearest neighbor algorithm in the TSP package was used to construct the route.
-This is the simplest algorithm, connecting each point to its closest neighbor until all points are connected. 
-It is a quick to solve algorithm, but generally does not generate the shortest route.
-2-3opt refinement can be used to optimize the route, however this also increases solve-time and was not used. 
+The Travelling Saleman's problem is an NP-hard problem, meaning the number of computational steps required to find a solution cannot be expressed as a polynomial function of the number of points in the problem instance. Heuristic algorithms have been developed to generate routes faster at the expense of optimality. The Nearest Neighbor (NN) algorithm was used as it is the fastest algorithm to solve, simply connecting each point to its nearest neighbor. Post-hoc refinement techniques can be used to decrease the length of the route generated by the NN algorithm, however these were not used.
+
 
 ### Sample TSP - 100 points
+A comparison of route length with and without 2-opt refinement using a small portion of the cluster. 2-opt refinement iteratively switches connections between nodes to reduce intersections but increases the time to find a route.
 ```{r, echo = FALSE}
 
 set.seed(666)
@@ -132,19 +115,23 @@ tsp_obj <- as.ETSP(cluster$BUS@coords[sample(nrow(cluster$BUS), 100),])
 # solve TSP w/ nearest neighbor and no-2opt refinement
 res <- solve_TSP(tsp_obj, method = "nn", control = c(two_opt = FALSE))
 
+res2 <- solve_TSP(tsp_obj, method = "nn", control = c(two_opt = TRUE))
+
 # plot the output
-plot(tsp_obj, res, main = paste0("Sample Tour (100 points) | Length: ", round(tour_length(res, tsp_obj)/5280, 2), " miles"))
+plot(tsp_obj, res, main = paste0("Nearest Neighbor Algorithm | Route: ", round(tour_length(res, tsp_obj)/5280, 2), " miles"), 
+     xlab = "", ylab = "", axes = FALSE, frame.plot = TRUE)
 
-
+plot(tsp_obj, res2, main = paste0("NN Algorithm w/ 2-opt | Route: ", round(tour_length(res2, tsp_obj)/5280, 2), " miles"),
+     xlab = "", ylab = "", axes = FALSE, frame.plot = TRUE)
 
 ```
 
-A sample route of the nearest neighbor algorithm with no post-hoc route refinement.
 
-## Separate Large clusters
-Large clusters (over 10,000 points) use too much memory to solve the TSP instance.
+
+## Large Clusters
+Large clusters (over 10,000 points) use too much memory to solve the TSP instance in one go.
 These are split into quadrants and TSP was run separately on each quadrant. 
-Occasionally, some quadrants are still too large, these are then split again into subquadrants. 
+Occasionally, some quadrants are still too large, these are then split again into subquadrants. The bounding box (bbox) of the cluster is used to generate polygons to split the cluster using the over() function.
 
 ### Split along cardinal directions
 ```{r}
@@ -157,7 +144,7 @@ Occasionally, some quadrants are still too large, these are then split again int
 # returns - a list of sp objects - a point cluster for each quadrant
 cardinalSplit <- function(cluster2, nsplit2) {
   
-  # find the weighted center of the AD
+  # find the weighted center of the AD again
   # can't just use the AD coordinates if its a second split
   AD_coords2 <- matrix(c(weighted.mean(x = cluster2@coords[,1],
                                          w = cluster2$FW_dis),
@@ -167,60 +154,59 @@ cardinalSplit <- function(cluster2, nsplit2) {
   
   # if the cluster if over 10000 BUS points, it needs to be split into 4
   if (nrow(cluster2) > nsplit2) {
-      poop <- cluster2@bbox
+      temp <- cluster2@bbox
       
       # combine the bbox coords with the weighted center
-      poop <- cbind(poop, AD_coords2)
+      temp <- cbind(temp, AD_coords2)
       
-      rownames(poop) <- c("x", "y")
-      colnames(poop) <- c("min", "max", "med")
+      rownames(temp) <- c("x", "y")
+      colnames(temp) <- c("min", "max", "med")
       
 
 
       # make a polygon for each quadrant
       # there's probably a way to do this automatically, but since I only need 4, its by hand
       # the points creating the polygons are the top left (NW) point in that poly, going clockwise
-      # (should have started at center point, oh well)
       polys_list <- list()
       
-      polys_list[[1]] <- Polygon(matrix(c(poop["x", "min"], poop["x", "med"],
-                                          poop["x", "med"], poop["x", "min"], 
-                                          poop["y", "max"], poop["y", "max"],
-                                          poop["y", "med"], poop["y", "med"]),
+      polys_list[[1]] <- Polygon(matrix(c(temp["x", "min"], temp["x", "med"],
+                                          temp["x", "med"], temp["x", "min"], 
+                                          temp["y", "max"], temp["y", "max"],
+                                          temp["y", "med"], temp["y", "med"]),
                                  nrow = 4, ncol = 2))
       polys_list[[1]] <- Polygons(list(polys_list[[1]]), 1)
       polys_list[[1]] <- SpatialPolygons(list(polys_list[[1]]))
       proj4string(polys_list[[1]]) <- house@proj4string
       
-      polys_list[[2]] <- Polygon(matrix(c(poop["x", "med"], poop["x", "max"],
-                                          poop["x", "max"], poop["x","med"],
-                                          poop["y", "max"], poop["y", "max"],
-                                          poop["y", "med"], poop["y", "med"]),
+      polys_list[[2]] <- Polygon(matrix(c(temp["x", "med"], temp["x", "max"],
+                                          temp["x", "max"], temp["x","med"],
+                                          temp["y", "max"], temp["y", "max"],
+                                          temp["y", "med"], temp["y", "med"]),
                                         nrow = 4, ncol = 2))
       polys_list[[2]] <- Polygons(list(polys_list[[2]]), 1)
       polys_list[[2]] <- SpatialPolygons(list(polys_list[[2]]))
       proj4string(polys_list[[2]]) <- house@proj4string
       
-      polys_list[[3]] <- Polygon(matrix(c(poop["x", "med"], poop["x", "max"],
-                                          poop["x", "max"], poop["x", "med"],
-                                          poop["y", "med"], poop["y", "med"],
-                                          poop["y", "min"], poop["y", "min"]),
+      polys_list[[3]] <- Polygon(matrix(c(temp["x", "med"], temp["x", "max"],
+                                          temp["x", "max"], temp["x", "med"],
+                                          temp["y", "med"], temp["y", "med"],
+                                          temp["y", "min"], temp["y", "min"]),
                                         nrow = 4, ncol = 2))
       polys_list[[3]] <- Polygons(list(polys_list[[3]]), 1)
       polys_list[[3]] <- SpatialPolygons(list(polys_list[[3]]))
       proj4string(polys_list[[3]]) <- house@proj4string
       
-      polys_list[[4]] <- Polygon(matrix(c(poop["x", "min"], poop["x", "med"],
-                                          poop["x", "med"], poop["x", "min"],
-                                          poop["y", "med"], poop["y", "med"],
-                                          poop["y", "min"], poop["y", "min"]),
+      polys_list[[4]] <- Polygon(matrix(c(temp["x", "min"], temp["x", "med"],
+                                          temp["x", "med"], temp["x", "min"],
+                                          temp["y", "med"], temp["y", "med"],
+                                          temp["y", "min"], temp["y", "min"]),
                                         nrow = 4, ncol = 2))
       polys_list[[4]] <- Polygons(list(polys_list[[4]]), 1)
       polys_list[[4]] <- SpatialPolygons(list(polys_list[[4]]))
       proj4string(polys_list[[4]]) <- house@proj4string
       
       
-      # Get the points in each quadrant
+      # Separate cluster into quadrants
       # create a list w/ 4 different groups of points, one for each cluster using over()
       points_list <- lapply(polys_list, function(x) {cluster2$split <- over(cluster2, x)
                                                      cluster2[is.na(cluster2$split) == FALSE,]})
@@ -229,7 +215,7 @@ cardinalSplit <- function(cluster2, nsplit2) {
   
   # if none of the points need to be split,
   # just make a list with the whole cluster
-  # needs to be a list, thats whats expected
+  # needs to be a list, thats whats expected in function later
   } else {
     
     points_list <- list(cluster)
@@ -244,7 +230,6 @@ cardinalSplit <- function(cluster2, nsplit2) {
 # run cardinalSplit() over the cluster
 points_list <- cardinalSplit(cluster$BUS, nsplit2 = 10000)
 
-str(points_list)
 
 ```
 
@@ -294,9 +279,9 @@ points(cluster$AD, pch = 24, col = "black", bg = "red")}
 
 ```
 
-
-### split into subquadrants if needed
-Note: threshold to split is from 10,000 points to 7,000 points for this example as the current cluster does not need subquadrants
+### Subquadrants if needed
+If the number of points in a quadrant still exeed 10,000 points, it is split again.
+Note: threshold to split is from 10,000 points to 7,000 points for this example as the sample cluster does not need subquadrants with default settings
 ```{r}
 
 # run through the list, get size of each list
@@ -326,7 +311,8 @@ if (sum(num_points > 7000) > 0) {
 
 ```{r, echo = FALSE}
 
-{plot(cluster$BUS, pch = 19, col = "grey", main = "cluster quadrants")
+{plot(cluster$BUS, pch = 19, col = "grey",
+      main = "NE quadrant split to subquadrants")
 points(points_list[[1]], pch = 19, col = "blue")
 points(points_list[[2]], pch = 19, col = "red")
 points(points_list[[3]], pch = 19, col = "yellow")
@@ -341,12 +327,8 @@ points(cluster$AD, pch = 24, col = "black", bg = "red")}
 
 ```
 
-NE quadrant split into subquadrants.
-(need to draw those lines)
-
-## Estimate VMT
-The TSP package is used to generate a route. 
-All quadrants/subquadrants are connected in a prespecified order (shown below) that forms a clockwise loop to estimate VMT.
+## Generating a route
+If cluster has been split into quadrants, the TSP function is ran on each subquadrant individually. The quadrants are connected in a prespecified order that forms a clockwise loop to estimate VMT. This plot shows the order of all possible subquadrants. A function called run_TSP() was developed to generate the route. Sometimes, splitting a cluster into quadrants results in an empty quadrant, if the cluster is not of uniform shape. Empty clusters are skipped over if necessary. 
 ```{r,echo=FALSE}
 
 lab <- data.frame(x = c(40,10,10,40,60,90,90,60,60,90,90,60,40,10,10,40),
@@ -357,9 +339,9 @@ lab <- data.frame(x = c(40,10,10,40,60,90,90,60,60,90,90,60,40,10,10,40),
 # show the quadrants/subquadrant diagram
 plot(1:100, 1:100, 
      pch = 19, col = "white",
-     main = "Quadrant order", 
+     main = "Quadrant order for run_TSP()", 
      xlab = NA, ylab = NA, 
-     axes = TRUE) # blank graph
+     axes = FALSE, frame.plot = TRUE) # blank graph
 points(lab[,1], lab[,2], 
        pch = 19, col = "white")
 text(lab[,1], lab[,2], lab[,3], cex=1, col="black")
@@ -373,21 +355,16 @@ abline(v = 25, lwd = 1)
 
 ```
 
-
-### Run TSP function
-run_TSP() generates the route.  
-Sometimes, splitting a cluster into quadrants results in an empty quadrant, so run_TSP() checks for that 
-and skips over the empty one.   
-Empty quadrants occur because the cluster is split along cardinal directions (N,S,E,W). 
-Splitting the cluster along its principal direction might prevent this problem.  
 ```{r}
 
+# ~~~~~~~~ run_TSP() function ~~~~~~~~~~~~~
 # run_TSP() runs the TSP problem over the given point cluster
 # @param clust - the point cluster - sp object
 # @param close_pnt - the point used to find the start point - coords
 # returns - the tour length in miles
 run_TSP <- function(clust, close_pnt) {
   print(paste0("clust size ", nrow(clust@coords)))
+  
   # sometimes splitting the cluster returns an empty quadrant
   # if that happens, return a 0 for the length
   if (length(clust@coords) > 0) {
@@ -408,23 +385,18 @@ run_TSP <- function(clust, close_pnt) {
     tour <- as.integer(tour)   
     end_idx <- tour[length(tour)]
     
-    
-    #res <- list(start_idx = start_idx, end_idx = end_idx, tour_dist = tour_dist)
     res <- list(end_idx = end_idx, tour_dist = tour_dist)
-  } else {
+ 
+   } else {
 
-    #res <- list(start_idx = 1, end_idx = NA, tour_dist = 0)
     res <- list(end_idx = NA, tour_dist = 0)
+    
   } # close if else
+  
   return(res)
 } # close run_TSP()
 
-
-```
-
-The run_TSP() function is ran over the points_list in a code loop.  
-The individual routes are connected to form a route based on the distance from the end point of one route to the start point of the next. The distance to and from the AD is also added.  
-```{r}
+# ~~~~~~~~~~~~~~~~~~~~~ find VMT of subquadrants ~~~~~~~~~~~
 
  # order the list by their name to get circle to go the right way
 points_list <- points_list[order(names(points_list))]
@@ -432,42 +404,40 @@ points_list <- points_list[order(names(points_list))]
 # the first time its ran, start at the point closest to the cluster AD
 close2 <- cluster$AD@coords
 
-#start_idx_list <- list()
+# empty lists
 end_idx_list <- list()
-#start_sp <- list()
 end_sp <- list()
 route_dist <- list()
-# run the TSP over the whole thing
+
+# run the TSP over each subquadrant in a for loop
 for (i in 1:length(points_list)) {
 
-  poop <- run_TSP(clust = points_list[[i]], close_pnt = close2)
+  temp <- run_TSP(clust = points_list[[i]], close_pnt = close2)
 
-  route_dist[[i]] <- poop$tour_dist
+  route_dist[[i]] <- temp$tour_dist
 
   
   # if the quadrant is empty, duplicate the end SP of the previous quadrant
   # if the NW quadrant is empty (first evaluated), end sp is the AD
   # this is a lot of ifs....maybe should have split on PD to prevent empty quadrants??
-  if (is.na(poop$end_idx) == TRUE) {
+  if (is.na(temp$end_idx) == TRUE) {
       if (i == 1) {
         end_sp[[i]] <- SpatialPoints(AD_coords, cluster@proj4string)
       } else {
          end_sp[[i]] <- end_sp[[i-1]]
       } # close inner if/else
   } else {
-    end_sp[[i]] <- points_list[[i]][poop$end_idx,]
+    end_sp[[i]] <- points_list[[i]][temp$end_idx,]
   } # close ifelse
 
   # if the cluster is empty, the end_idx wil return as NA
   # in that case, dont change the close2 point
-  if (is.na(poop$end_idx) == TRUE) {
+  if (is.na(temp$end_idx) == TRUE) {
     close2 <- close2
   } else {
    # reset the close2 variable as the end point
-    close2 <- points_list[[i]][poop$end_idx,]
+    close2 <- points_list[[i]][temp$end_idx,]
   } # close ifelse
-
-  print(paste0("Tour dist. quadrant ", i, ": ", round(poop$tour_dist, 2), " miles"))
 } # close for loop
 
 # add tour lengths together
@@ -475,7 +445,7 @@ route_dist <- do.call(sum, route_dist)
 
 # also add the distance from the last stop back to the AD
 d <- pointDistance(cluster$AD@coords, end_sp[[length(end_sp)]]@coords, lonlat = FALSE)
-route_dist <- route_dist + (d/5280)
+route_dist <- route_dist + (d/5280) # and convert feet to miles
 
 print(paste0("Total Collection Route: ", round(route_dist, 2), " miles"))
 
@@ -483,10 +453,12 @@ print(paste0("Total Collection Route: ", round(route_dist, 2), " miles"))
 
 
 # Estimate GHG emissions
-GHG emissions are calculated for a single AD at a time. 
-run_TSP() (above) is used to get the VMT of the cluster for collection/hauling emissions  
+Net GHG emissions are estimated for a single AD at a time. GHG emissions from collection are a function of the VMT derived from run_TSP() and the weight of FW hauled and represent positive emissions. FW was assumed to be collected weekly with a linear relationship between VMT and weight of FW hauled as FW is collected along the route. GHG credits to the system are considered negative GHGs. Sources of these negative emissions are avoided landfill gas (LFG) emissions and those associated with the use of the AD byproducts. This includes substitution of natural gas (NG) with biogas and the use of digestate as nitrogen (N) fertilizer. Total emissions for the cluster are shown in kg CO2eq.
+
+Two AD operational scenarios are evaluated which differ based on the amount of FW allocated to the AD. In Scenario 1 (Less Efficient AD), a discount factor is applied to biogas generation if the amount of FW in a cluster is greater than the AD capacity. This discount factor accounts for the partial digestion of FW due to an increased organic loading rate (OLR) of the AD. Scenario 2 (Larger AD) models a situation where all FW is digested at optimal rates, as if a larger AD had been placed within the cluster.
 
 ## Set up constants
+These are emissions factors and other constants. Data sources are listed with each variable in the code.
 ```{r}
 
 
@@ -502,49 +474,66 @@ cluster$AD$FW_dis_kg <- cluster$AD$FW_dis * 907.185
 #~~~~~~ Set up constants ~~~~~~~~~~~~#
 
 # nitrogen in feedstock - [kg]
-# assuming 17% wet weight is N
-## Source: Small Scale AD GHG Calculator spreadsheet (Source: Sara data)
-cluster$AD$N_fdstck <- cluster$AD$FW_dis_kg * 0.17
+  # assuming N content is 2.8% of dry matter (DM)
+  # assuming DM content 18.1% wet weight
+  # Source: Fisgativa et. al. (2016)
+  cluster$AD$N_fdstck <- cluster$AD$FW_dis_kg * 0.181 * 0.028
 
-## Food Waste Avoided Landfill Emission Factor (0.39) from [MTCO2e/short ton waste] to [kgCO2e/kg waste]
-# Source: CCI Emissions Factor database - Food waste tab
-GHG_FLW_prevent <- 0.39 * 1000*2.2/2000
+# Avoided LFG emissions [kgCO2e/kg waste]
+  # Food waste avoided landfill emissions factor [0.39 MTCO2e/short ton waste]
+  ### Source: CCI Emissions Factor database - Food waste tab/Landfill tab. They cite:
+  ### "CARB Method for Estimating Greenhouse Gas Emission Reductions from Diversion
+  ###   of Organic Waste from Landfills to Compost Facilities (2017)"
+  GHG_FLW_prevent <- 0.39 * 1000*2.2/2000
+  
+# Avoided Nitrogen fertilizer production - [kg CO2e/kg of N]
+  # Source: Moller 2009
+  avoid_Nfert_ef <- 8.9
+  
+# Transportation (Medium & Heavy Duty Vehicles Diesel Vehicles) - [kg CO2e per kg/mi]
+  ## Emissions factors: CO2 [10.21 kg CO2e/gal fuel], CH4 & N20 [0.0000051/0.0000048 kg CO2e/mile]
+  ### Source: https://www.epa.gov/sites/default/files/2018-03/documents/emission-factors_mar_2018_0.pdf
+  ## Truck MPG: [0.22727 gal/mile]
+  ### Source: https://www.tandfonline.com/doi/pdf/10.1080/10962247.2014.990587?needAccess=true
+  ## Truck capacity: [25,000lbs/11340kg]
+  ### Source: https://refusetrucks.scrantonmfg.com/automated-side-loader/roto-pac 
+  ## GWP 100 - IPCC
+  GHG_fuel_use <- ((0.22727 * 10.21) + (0.0000051 * 25) + (0.0000048 * 298))/11340
 
-# kg per mile diesel hauling (light, 6,000lbs capacity) - [kg CO2e per kg/mi]
-## Source: Small Scale AD GHG Calculator spreadsheet (Source: Sara data)
-GHG_fuel_use <- (0.46+(0.00007*296))/2700
+# Avoided natural gas (NG) consumption emissions factor - [kg CO2e/m3 of NG]
+  # Citation: 53.12 from https://www.eia.gov/environment/emissions/co2_vol_mass.php, and 28.32 m3 per tcf
+  avoid_NG_ef <- 53.12/28.32
 
 
+  
 ```
 
-## Calculate GHG Component Constants
-These values are dependent on the amount of FW diverted from landfills and are the same in both scenarios  
+## Calculate Equal GHG components
+Avoided landfill gas, nitrogen fertilizer displacement, and collection GHGs are dependent on the amount of FW diverted to the AD. In this study, the entire FWG is assumed to be diverted and therefore is the same in both AD operational scenarios.
 ```{r}
 
 # avoided landfill gas by FW diversion [kg CO2e/year]
 LFG_avoid <- cluster$AD$FW_dis_kg * GHG_FLW_prevent
 
 # nitrogen fertilizer substitution for AD digestate (avoided N production) [kg CO2e/year]
-# Source: SmallAD GHG Calculator (Sara data)
-# this is not dependent on digestor efficiency, nitrogen in FW does not change
-avoid_N_CO2e <-  cluster$AD$N_fdstck * 0.867
+  # this is not dependent on digestor efficiency, nitrogen in FW does not change
+avoid_N_CO2e <-  cluster$AD$N_fdstck * avoid_Nfert_ef
 
 # Transport GHGs [kg CO2e/year]
-# GHG emissions for a weekly collection route is calculated.
-# capacity limitations to the truck is ignored
-# all FW on the route (1/52nd of FW_dis) is assumed to travel the entire length of the route
-# this is then multipled by 52 to get a yearly collection value for the cluster (FWG is in units of tons/year)
-CO2e_collect <-  52 * ((cluster$AD$FW_dis_kg/52) * cluster$AD$collect_dist_mi * GHG_fuel_use)
+  # GHG emissions of a weekly collection route is calculated.
+  # the weight transported is halved to model linear increasing FW along collection route
+  # this is then multipled by 52 to get yearly collection GHGs to match units of FWG (tons/year)
+  # capacity limitations to the truck are ignored
+CO2e_collect <-  52 * (((cluster$AD$FW_dis_kg/52)/2) * cluster$AD$collect_dist_mi * GHG_fuel_use)
 
 ```
 
 
 ## Scenario 1 (Less Efficient AD)
-Scenario 1, all FW goes to digestor, but AD less efficient if overfilled (reduced biogas generation). 
-A discount factor that accounts for the faster throughput of FW through the AD is applied to methane generation.
+Scenario 1, all FW goes to digestor, but the AD is less efficient if overfilled, leading to reduced biogas generation and resulting negative emissions. A discount factor that accounts for the faster throughput of FW through the AD is applied to methane generation. This discount is based on the Organic Loading Rate of the AD.
 ```{r}
 
-# ~~~~~~ From Sara's email ~~~~~~~~~~~
+# ~~~~~~ Organic Loading Rate ~~~~~~~~~~~
 # For non-overfilled digesters, baseline assumptions:
 # OLR_base = digester size (55,000 ton; 10,000 ton; 5,000 ton) / 365 days = [ton/days] (OLR - Organic loading rate)
 # example:  55,000 ton / 365 days = 150.7 ton/day
@@ -564,23 +553,22 @@ A discount factor that accounts for the faster throughput of FW through the AD i
 OLR_base <- cluster$AD$AD_cap_kg[1] / 365
 
 # Methane generation by AD - [m3]
-# Function of volatile solids in food waste
-# assume 26% volatile solids (Zhang et al 2007, Fisgativa et al 2016)
-# assume  0.45 m3 ch4/kg VS (Bong et al 2018, Fisgativa et al 2016)
-# if FW allocated to AD higher than AD capacity, use a discount factor of OLR_base/OLR_new
-# otherwise, discount factor is 1
+  # Function of volatile solids in food waste
+  # assume 26% volatile solids (Zhang et al 2007, Fisgativa et al 2016)
+  # assume  0.45 m3 ch4/kg VS (Bong et al 2018, Fisgativa et al 2016)
+  # if FW allocated to AD higher than AD capacity, use a discount factor of OLR_base/OLR_new
+  # otherwise, discount factor is 1
 cluster$AD$methane.1 <- ifelse(cluster$AD$FW_dis_kg > cluster$AD$AD_cap_kg, 
                                cluster$AD$FW_dis_kg * 0.26 * 0.45 * (OLR_base / (cluster$AD$FW_dis_kg/365)),
                                cluster$AD$FW_dis_kg * 0.26 * 0.45 * 1)
 
-# natural gas equivalent - [m3]
-# assuming 60% methane
-cluster$AD$NG_equiv.1 <- cluster$AD$methane.1 * 0.6
+# assuming 60% methane is NG
+  # [m3]
+  cluster$AD$NG_equiv <- cluster$AD$methane.1 * 0.6
 
-# Avoided Natural Gas due to biogas generation
-# units: [kg CO2e/year]
-# Natural Gas Emissions Factor (53.12/28.32) source: Small_AD_GHG_calculator (Sara Data)
-avoid_NG_CO2e.1 = cluster$AD$NG_equiv.1 * (53.12/28.32) 
+# Avoided GHGs from Natural Gas due to biogas generation [kg CO2e/year]
+  # natural gas = 60% methane
+avoid_NG_CO2e.1 <-  cluster$AD$NG_equiv * avoid_NG_ef
                             
 
 
@@ -593,7 +581,7 @@ print(paste0("Scen 1 GHG for sample cluster: ", round(Scen1_GHG_CO2e_kg, 2), " k
 
 
 ## Scenario 2 (Larger AD)
-If the AD is allocated FW over its capacity, it is assumed a larger AD is placed there that can run at maximum efficiency.
+Scenario 2 models an ideal situation where all FW is digested at maximum efficiency with no discount factor applied to biogas generation. If the AD is allocated FW over its capacity, it is assumed a larger AD is placed there that can run at maximum efficiency.
 ```{r}
 
 # Same data sources as above
@@ -605,7 +593,7 @@ cluster$AD$methane.2 <- cluster$AD$FW_dis_kg * 0.26 * 0.45
 cluster$AD$NG_equiv.2 <- cluster$AD$methane.2 * 0.6
   
 # avoided natural gas production [kg C02e / year]
-avoid_NG_CO2e.2 = cluster$AD$NG_equiv.2 * (53.12/28.32)
+avoid_NG_CO2e.2 = cluster$AD$NG_equiv.2 * avoid_NG_ef
 
 
 # Scenario 2 total GHG production
