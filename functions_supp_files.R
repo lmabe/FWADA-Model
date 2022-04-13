@@ -2343,9 +2343,6 @@ model_3 <- function(kmean_result, adj_limit = 10560,
     
     
     
-    
-    
-    
     if (draw_map == TRUE) {
         p <- clust_plot(list(AD = AD, BUS = BUS))
         ggsave(paste0("C:/Users/Lauren Mabe/Box Sync/Food Waste Mapping/R_Stuff/Model_3_github/Maps/GIF_folder/M3_",
