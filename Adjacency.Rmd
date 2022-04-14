@@ -1,12 +1,15 @@
 ---
-title: "Determining_Adjacency"
+title: "Establishing adjacency between clusters"
 author: "Lauren Mabe"
-date: "10/26/2021"
-output: 
+date: "4-14-2022"
+output:
+  word_document:
+    toc: yes
+    toc_depth: '2'
   html_document:
     theme: journal
-    toc: true
-    toc_float: true
+    toc: yes
+    toc_float: yes
     toc_depth: 2
 ---
 
@@ -15,16 +18,12 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 
-Establishing adjacency between clusters is important for the grabbing function.  
-This file shows the steps to determining adjacency used in the M3 model. 
-As the model runs, the adjacency matrix (vector) for a single cluster is generated as needed.  
-
-At each step of the adjacency calculation, plots are made to visually show the method.  
-The functions within each chunk therefore build on one another as new code is added to show new steps.  
+# Abstract
+Correctly establishing adjacency between clusters is a critical component of the model to create efficient, compact clusters that do not “jump” over one another. There are many commonly used measures of adjacency using polygons, however these were found to be unsuitable for use with the FWG. Converting the point clusters into polygons using convex or concave hulls was considered as well as generating Voronoi polygons from the AD centroids. A new method was developed that measures the distance between the closest two FW points in a given pair of clusters. The adjacency function is used any time FW is exchanged between ADs and the adjacency matrix can be determined for a single AD at a time using minimal computation time. (the distance/adjacency matrix is really a distance/adjacency vector - 1D). Natural breaks in the distance vector are used to classify ADs (that are not the target AD) into adjacent and nonadjacent groups. 
 
 
 # Setup
-## Load Packages and Functions
+## Packages
 ```{r, warning = FALSE, message = FALSE}
 
 # for spatial data
@@ -37,11 +36,8 @@ library(spData)
 
 ```
 
-## Load data
-The data loaded here is built-in spatial points dataset from the spData package.
-It will fill in for the "FW Geography" (FWG) dataset that represents FW disposal in LA County used in the study.  
-
-Each point has been given a random "FW_dis" (tons FW disposed annually) value to work with the model's functions.  
+## Data
+A spatial points dataset from spData package is used as a substitute for the Food Waste Geography (FWG) dataset. The points represent commercial businesses that dispose of FW in Los Angeles County (BUS). Each point is randomly assigned a FW_dis value (tons of FW disposed of annually).
 ```{r}
 
 set.seed(666) # for random number generation
@@ -68,10 +64,9 @@ plot(house, pch = 19, col = "black", main = "sample FWG")
 ```
 
 
-## Generate FW clusters
-The FW_kmeans() function is used to generate clusters for this example document.  
+## Generate inital clusters using K-means
+The first step of the FWADA model is to use unsupervised K-means clustering to generate an initial set of clusters. The number of clusters to find is set as the minimum number of ADs needed at a given capacity to digest all FW in the FWG. In this example, AD capacity is set to 5000 tons/year, which will generate 13 clusters. The ADs are placed at the cluster centers.
 
-AD capacity is set to 5000 tons/year, which will generate 13 clusters.
 ```{r, message = FALSE}
 
 # FW_kmeans() performs kmeans clustering and calculates FW_gen & FW_dis for each cluster
@@ -139,19 +134,13 @@ points(km_house$AD, pch = 24, col = "white", bg = "black")
 ```
 
 
-# Determining Adjacency
-The rest of this file goes through the steps of determining adjacency for the clusters.  
-Functions written in the chunks build on one another to show the process one step at a time.  
+# Distance Matrix 
+The distance matrix used to establish adjacency is based on the boundary of the clusters instead of centroid based methods. While the boundary of the clusters can be drawn using convex or concave hulls, these methods are computationally complex and take time to solve. To save memory, the distance between the pair of FW points that are closest in each cluster is measured for the distance matrix. Since adjacency is established for a single AD at a time, this matrix is really just a distance vector. In this section, the AD that needs to exchange FW points with its neighbors is shown in red (AD code: x1) and is referred to as the target cluster or AD.
 
 ## Closest two points between clusters  
-Cluster adjacency must be determined on the boundary of the clusters instead of centroid based methods.  
-In lieu of drawing the cluster boundary using convex/concave hulls or other computationally complex methods,  
-only the closest pair of FW points from one cluster to another are considered.  
+First, the point in the target cluster (x1) that is closest to the AD of another cluster is found and visa verse. Then the distance between those two FW points is measured for the distance vector. This is done iteratively for all clusters until the full distance vector for the target AD (x1) is found. The length of the red lines in the following plot is the distance vector for the target AD.
 
-This is done by finding the closest BUS point from the target cluster to the original AD  
-then finding the closest BUS point from the original cluster to the target AD  
-The distance between the two points is reported as the adjacency matrix.  
-```{r, echo = FALSE}
+```{r, echo = FALSE, results='hide',fig.keep='all'}
 
 # plots the closest pair of points from on AD (OG - original) to another (T - target)
 # @param OG_code - Default "x1", the AD for for the OG AD (the one finding adjacency for)
@@ -184,7 +173,7 @@ plot_closest_points <- function(OG_code = "x1", T_code, km_res) {
                   T_BUS[T_BUS$pdist == min(T_BUS$pdist),]), "SpatialLines")
     # plot the result
     plot(km_res$BUS, col = "grey",
-         main = paste0("Closest point from x1 to ", T_code, " | dist: ", round(dist2points))) # all points
+         main = paste0("x1 to ", T_code, " | dist: ", round(dist2points))) # all points
     points(OG_BUS, pch = 19, col = "red") 
     points(T_BUS, pch = 19, col = "blue")  
     points(OG_AD, pch = 24, col = "white", bg = "black") 
@@ -194,16 +183,18 @@ plot_closest_points <- function(OG_code = "x1", T_code, km_res) {
     plot(l, add = TRUE, lwd = 2, col = "red")
 }
 
-# lapply over the AD codes to get distance of closest points from x1 to all other ADs
-lapply(km_house$AD$AD_code, plot_closest_points, km_res = km_house, OG_code = "x1")
+par(mfrow = c(3,3), mar = c(1,1,1,1))
 
+# lapply over the AD codes to get distance of closest points from x1 to all other ADs
+temp <- lapply(km_house$AD$AD_code, plot_closest_points, km_res = km_house, OG_code = "x1")
+temp
 ```
 
 
 
-## Ordered adjacency matrix
-The length of the red line in plots above is what is in the adjacency matrix (vector) for a given AD.
-getDistMatRow() calculates these distances, then puts them in ascending order.  
+## Ordered distance vector
+getDistMatRow() is the function developed to calculate the distance vector. It also puts the vector into ascending order.
+
 ```{r}
 
 # calculates the adjacency matrix row for a given AD_code
@@ -268,6 +259,8 @@ sorted <- sorted[2:length(sorted)]
 sorted
 ```
 
+When the distance vector is put in ascending order and plotted, groups of distances are observed. Since the distance vector is based on the points nearest to the edge of the cluster and not the AD at the centroid, the height of these groups on the Y-axis is approximately the diameter of the clusters. These groups on the plot therefore correspond to rings of clusters around the original AD (x1)
+
 ```{r, echo = FALSE}
 
 par(mfrow = c(1,2), mar = c(3,4,1,1))
@@ -286,20 +279,14 @@ legend("bottomright", pch = 19, col = "red", legend = c("AD_code x1"))
 
 ```
 
-The points on the left correspond to the length of the red lines in the plots above.  
-Large "jumps" can be seen in the sorted distances (y axis).  
-Since the adjacency matrix uses the closest pair of points, instead of the centroids, this jump is approximately the size of the diameter of the clusters.  
-The ADs under the first jump are considered adjacent
+# Adjacency Matrix
 
-## Pick out adjacent ADs
-To give FW to adjacent ADs, the "jumps" in the ordered distance matrix need to be measured.  
-This could be done using Jenks Natural Break Algorithm, however this method requires a user-inputted number of breaks to choose (like a one-dimensional k-means clustering).  
-When the size of the clusters are known ahead of time, this is possible. However, our model creates variable sized clusters depending on desired AD capacity, therefore an "automatic" method of detecting this first "jump" is needed.  
+## Identify Natural Breaks
+To get classify clusters into adjacent and nonadjacent groups, the breaks in this vector need to be established. Jenk's Natural Breaks algorithm was considered, as it is an unsupervised method to cluster one-dimensional objects. Much like K-means clustering, it requires a user-specified number of clusters to find as an input. Given that the FWADA model is run at multiple AD capacities, we were unable to determine an appropriate value. 
 
-To do so, the difference between points in the ordered adjacency matrix is determined, and "jumps" are identified where this difference is much higher than others (above 90% of standard deviation)
+To generate efficient, compact clusters, FW should only be passed between clusters immediately surrounding the target AD (x1). Therefore, it is only necessary to identify the first break in the ordered distance matrix. To do so, the difference between points in the ordered distance vector is calculated (middle plot). The first natural break is identified where this difference is much larger than the others. After parameter testing, this value was set as a distance above 90% of standard deviation, shown in blue on the middle plot. Clusters with distance vector below this break were considered adjacent to the target AD.
+
 ```{r}
-
-
 
 # make a df of the distance between each point of the sorted adjacency matrix
 diff_df <- data.frame(diff = diff(sorted),
@@ -355,5 +342,3 @@ legend("bottomright", pch = 19, col = "red", legend = c("AD_code x1"))
 
 ```
 
-The middle plot shows the differences between the distances in the adjacency matrix (shown in left plot).  
-The blue line is 90% of the standard deviation of the distances. The first point over that distance corresponds with the first "jump" in the left (distance) plot. The ADs below this jump are considered adjacent (colored blue).  
