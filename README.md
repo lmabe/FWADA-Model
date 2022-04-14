@@ -8,6 +8,6 @@ Adjacency.Rmd - the method of establishing adjacent FW clusters developed for th
 Estimate_GHG.Rmd - generating a collection route and calculating net GHG emissions for a single cluster.  
 Model_Processes.Rmd - Two functions developed to change size of FW clusters in the FWADA model.
 
-functions_supp_files.R - includes the FWADA model as well as functions to calculate net GHG and other statistics for the clusters
+functions_supp_files.R - includes the FWADA model used with Monte Carlo simulation in this study as well as functions to calculate net GHG and other statistics for the clusters
 
 All files developed by Lauren Mabe
