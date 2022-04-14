@@ -156,7 +156,7 @@ plot(cluster, pch = 20, col = "black",
 ```
 
 ## PCA for Principal Direction
-Principal Component Analysis (PCA) is used on the cluster coordinates to determine the principal direction of the cluster. The eigenvectors are used to determine the line on which to split the clusters.
+Principal Component Analysis (PCA) is used on the cluster coordinates to determine the principal direction of the cluster. The eigenvectors are used to determine the line on which to split the clusters (perpendicular to principal direction of the cluster). 
 ```{r}
 
 # get the target FW before splitting the cluster, will need later
