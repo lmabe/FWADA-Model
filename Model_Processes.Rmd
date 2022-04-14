@@ -594,7 +594,7 @@ FWd <- FWd_func_one_point(point = km_house$AD[km_house$AD$AD_code == "x7",],
 
 ```
 
-```{r, echo = FALSE}
+```{r}
 
 
 plot(FWd$kdist, FWd$FWd, type = 's',
