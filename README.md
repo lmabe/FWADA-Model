@@ -1,4 +1,4 @@
-# Files associated with the FWADA model associated with the manuscript: TITLE (w/ link?)
+# Files associated with the FWADA model associated with the manuscript: "A cluster-based spatial analysis of recycling boundaries aligning anaerobic digestion infrastructure with food waste generation in California" (Mabe, Pace, Spang 2022)
 
 Food Waste Anaerobic Digestor Allocation (FWADA) model. These files show the R code used to develop the FWADA model.
 
@@ -10,4 +10,4 @@ Model_Processes.Rmd - Two functions developed to change size of FW clusters in t
 
 functions_supp_files.R - includes the FWADA model used with Monte Carlo simulation in this study as well as functions to calculate net GHG and other statistics for the clusters
 
-All files developed by Lauren Mabe
+All files written by Lauren Mabe
